@@ -112,6 +112,14 @@ const recordAndReport = async ({
           )
         : undefined;
     const provenance = scopedConversationId ? getProvenance?.(scopedConversationId) : undefined;
+    const previous = scopedConversationId
+      ? await store.get?.({
+          kind: input.kind,
+          treeId: input.treeId,
+          category: input.category,
+          connectorName: input.connectorName,
+        })
+      : undefined;
     const record = await store.record({
       ...input,
       ...(provenance?.conversationId ? { conversationId: provenance.conversationId } : {}),
@@ -130,7 +138,8 @@ const recordAndReport = async ({
       onAppliedWrite?.(scopedConversationId, {
         store: 'decision_tree_learning',
         item_id: itemParts.join(':'),
-        action: 'record',
+        action: previous ? 'update' : 'record',
+        ...(previous ? { before_status: 'active', before_content: previous.content } : {}),
         after_status: 'active',
         after_content: record.content,
       });

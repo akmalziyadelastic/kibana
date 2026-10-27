@@ -205,6 +205,15 @@ describe('PR 3b write provenance, reinforcementSessionRegistry, and applied_writ
         after_content: 'Merged Redis pool content.',
         replaced_ids: ['memory_old-redis'],
       },
+      {
+        store: 'semantic_memory',
+        item_id: 'memory_old-redis',
+        action: 'archive_merged',
+        before_status: 'active',
+        after_status: 'archived',
+        before_content: 'Old Redis pool content.',
+        after_content: 'Old Redis pool content.',
+      },
     ]);
   });
 

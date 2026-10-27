@@ -50,6 +50,7 @@ export const DECISION_TREE_TOOL_IDS = [
 ] as const;
 
 export interface ReinforcementSessionState {
+  registered?: boolean;
   provenance?: WriteProvenance;
   learnings: LearningRecord[];
   appliedWrites: AppliedWriteRecord[];
@@ -75,6 +76,7 @@ class ReinforcementSessionRegistry {
 
   registerSession(scopedConversationId: string, provenance: WriteProvenance): void {
     const state = this.getOrCreate(scopedConversationId);
+    state.registered = true;
     state.provenance = provenance;
   }
 
@@ -98,15 +100,17 @@ class ReinforcementSessionRegistry {
     }
     const buffered = state.learnings;
     state.learnings = [];
-    if (!state.provenance && state.appliedWrites.length === 0) {
+    if (!state.registered) {
       this.sessions.delete(scopedConversationId);
     }
     return buffered;
   }
 
   recordAppliedWrite(scopedConversationId: string, write: AppliedWriteRecord): void {
-    const state = this.getOrCreate(scopedConversationId);
-    state.appliedWrites.push(write);
+    const state = this.sessions.get(scopedConversationId);
+    if (state?.registered) {
+      state.appliedWrites.push(write);
+    }
   }
 
   drainSession(scopedConversationId: string): ReinforcementSessionState {

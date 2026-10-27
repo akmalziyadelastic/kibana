@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { z } from '@kbn/zod/v4';
 import { StepCategory } from '@kbn/workflows';
 import { createServerStepDefinition } from '@kbn/workflows-extensions/server';
+import type { CoreStart } from '@kbn/core/server';
 import type { AgentBuilderPluginStart } from '@kbn/agent-builder-server';
 import { MAX_KEYWORD_LENGTH } from '../../common';
 import { NIGHTSHIFT_DECISION_TREE_REINFORCEMENT_AGENT_ID } from '../agents/decision_tree_reinforcement';
@@ -33,9 +34,13 @@ const MAX_INPUT_CHARS = 100_000;
 
 export const decisionTreeReinforceStepDefinition = ({
   getAgentBuilder,
+  getSavedObjects,
+  getUiSettings,
   isEnabled,
 }: {
   getAgentBuilder: () => AgentBuilderPluginStart | undefined;
+  getSavedObjects?: () => CoreStart['savedObjects'] | undefined;
+  getUiSettings?: () => CoreStart['uiSettings'] | undefined;
   isEnabled?: () => boolean;
 }) =>
   createServerStepDefinition({
@@ -163,6 +168,8 @@ export const decisionTreeReinforceStepDefinition = ({
             spaceId,
             workflowExecutionId: executionId,
             request,
+            getSavedObjects,
+            getUiSettings,
             logger: context.logger,
             attributes: {
               'nightshift.reinforcement_conversation_id': conversation.id,

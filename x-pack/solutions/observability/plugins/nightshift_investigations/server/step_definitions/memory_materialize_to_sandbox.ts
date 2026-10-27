@@ -8,7 +8,7 @@
 import { z } from '@kbn/zod/v4';
 import { StepCategory } from '@kbn/workflows';
 import { createServerStepDefinition } from '@kbn/workflows-extensions/server';
-import type { Logger } from '@kbn/core/server';
+import type { CoreStart, Logger } from '@kbn/core/server';
 import type { SandboxPluginStart } from '@kbn/sandbox-plugin/server';
 import { usesKnowledge } from '../agents/agent_policy';
 import { hydrateMemoryWorkspace } from '../memory/register_memory';
@@ -24,11 +24,15 @@ const MATERIALIZE_TIMEOUT_MS = 45_000;
 
 export const memoryMaterializeToSandboxStepDefinition = ({
   getSandboxStart,
+  getSavedObjects,
+  getUiSettings,
   logger,
   isEnabled,
   telemetry,
 }: {
   getSandboxStart: () => SandboxPluginStart | undefined;
+  getSavedObjects?: () => CoreStart['savedObjects'] | undefined;
+  getUiSettings?: () => CoreStart['uiSettings'] | undefined;
   logger: Logger;
   isEnabled?: () => boolean;
   telemetry: NightshiftTelemetryClient;
@@ -139,6 +143,9 @@ export const memoryMaterializeToSandboxStepDefinition = ({
             conversationId,
             spaceId,
             workflowExecutionId,
+            request: context.contextManager?.getFakeRequest?.(),
+            getSavedObjects,
+            getUiSettings,
             logger,
           },
           async (span) => {

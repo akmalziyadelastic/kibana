@@ -17,6 +17,7 @@ import {
   shutdownInferenceTracerProvider,
 } from '@kbn/inference-tracing';
 import {
+  DEFAULT_BACKGROUND_PRIVACY_SETTINGS,
   isValidOtelSpanId,
   isValidOtelTraceId,
   toDeterministicSpanId,
@@ -84,13 +85,14 @@ describe('server/tracing/background_trace', () => {
   });
 
   describe('withNightshiftBackgroundSpan', () => {
-    it('activates AgentBuilderContext, sets inference tracking beacon, and parents under T_background traceId', async () => {
+    it('activates AgentBuilderContext, sets inference tracking beacon, and applies privacy filtering on nightshift.* attributes', async () => {
       const backgroundTraceId = 'be01f25c8dec495ba1346f752bdce9e0';
       const foregroundTraceId = 'ebf7677419199e9edc53ac5dc26b9e0e';
       let observedTraceId: string | undefined;
       let observedSpaceBaggage: string | undefined;
       let observedConvBaggage: string | undefined;
       let observedBeaconBaggage: string | undefined;
+      let spanAttrWrites: unknown;
 
       const returnValue = await withNightshiftBackgroundSpan(
         {
@@ -101,6 +103,7 @@ describe('server/tracing/background_trace', () => {
           conversationId: 'conv-1',
           spaceId: 'marketing',
           workflowExecutionId: 'exec-1',
+          privacySettings: DEFAULT_BACKGROUND_PRIVACY_SETTINGS,
         },
         async (span) => {
           const active = otelContext.active();
@@ -109,6 +112,20 @@ describe('server/tracing/background_trace', () => {
           observedConvBaggage = baggage?.getEntry(CONVERSATION_ID_BAGGAGE_KEY)?.value;
           observedBeaconBaggage = baggage?.getEntry(BAGGAGE_TRACKING_BEACON_KEY)?.value;
           observedTraceId = span?.spanContext().traceId ?? trace.getSpanContext(active)?.traceId;
+          span?.setAttribute(
+            'nightshift.applied_writes',
+            JSON.stringify([
+              {
+                store: 'cortex',
+                item_id: 'cortex_service_checkout',
+                action: 'upsert',
+                before_content: 'secret before',
+                after_content: 'secret after',
+              },
+            ])
+          );
+          spanAttrWrites = (span as unknown as { attributes?: Record<string, unknown> })
+            ?.attributes?.['nightshift.applied_writes'];
           return 'ok';
         }
       );
@@ -118,6 +135,7 @@ describe('server/tracing/background_trace', () => {
       expect(observedConvBaggage).toBe('conv-1');
       expect(observedBeaconBaggage).toBe(BAGGAGE_TRACKING_BEACON_VALUE);
       expect(observedTraceId).toBe(backgroundTraceId);
+      // With default includeRealIds: false, sensitive IDs are hashed (16-hex)
       expect(startedSpans).toEqual([
         expect.objectContaining({
           name: 'nightshift.decisionTreeReinforce',
@@ -125,14 +143,38 @@ describe('server/tracing/background_trace', () => {
           attributes: expect.objectContaining({
             'nightshift.background_trace_id': backgroundTraceId,
             'nightshift.foreground_trace_id': foregroundTraceId,
-            'nightshift.round_id': 'round-1',
-            'nightshift.workflow_execution_id': 'exec-1',
+            'nightshift.conversation_id': expect.stringMatching(/^[0-9a-f]{16}$/),
+            'nightshift.round_id': expect.stringMatching(/^[0-9a-f]{16}$/),
+            'nightshift.workflow_execution_id': expect.stringMatching(/^[0-9a-f]{16}$/),
           }),
         }),
       ]);
+      // With default includeLlmResponses: false / includeToolDetails: false, before/after content is stripped
+      expect(JSON.parse(String(spanAttrWrites))).toEqual([
+        {
+          store: 'cortex',
+          item_id: 'cortex_service_checkout',
+          action: 'upsert',
+        },
+      ]);
     });
 
-    it('skips span creation when privacySettings.enabled is false', async () => {
+    it('fails closed when neither privacySettings nor uiSettings/savedObjects are supplied, or when privacySettings.enabled is false', async () => {
+      let receivedSpanWithoutSettings: unknown = 'not-called';
+      const res1 = await withNightshiftBackgroundSpan(
+        {
+          name: 'nightshift.cortexHydrate',
+          traceId: 'be01f25c8dec495ba1346f752bdce9e0',
+          spaceId: 'default',
+        },
+        async (span) => {
+          receivedSpanWithoutSettings = span;
+          return 'no-settings';
+        }
+      );
+      expect(res1).toBe('no-settings');
+      expect(receivedSpanWithoutSettings).toBeUndefined();
+
       let receivedSpan: unknown = 'not-called';
       const result = await withNightshiftBackgroundSpan(
         {
@@ -140,14 +182,8 @@ describe('server/tracing/background_trace', () => {
           traceId: 'be01f25c8dec495ba1346f752bdce9e0',
           spaceId: 'default',
           privacySettings: {
+            ...DEFAULT_BACKGROUND_PRIVACY_SETTINGS,
             enabled: false,
-            includeUserPrompts: false,
-            includeLlmResponses: false,
-            includeToolDetails: false,
-            includeSystemPrompt: false,
-            includeRealNames: false,
-            includeRealIds: false,
-            includeUserData: false,
           },
         },
         async (span) => {

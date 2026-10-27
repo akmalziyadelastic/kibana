@@ -8,7 +8,7 @@
 import { z } from '@kbn/zod/v4';
 import { StepCategory } from '@kbn/workflows';
 import { createServerStepDefinition } from '@kbn/workflows-extensions/server';
-import type { Logger } from '@kbn/core/server';
+import type { CoreStart, Logger } from '@kbn/core/server';
 import type { SandboxPluginStart } from '@kbn/sandbox-plugin/server';
 import { hydrateDecisionTreeWorkspace } from '../decision_trees/register_decision_trees';
 import { DECISION_TREE_WORKSPACE_ROOT } from '../decision_trees/materialize';
@@ -23,10 +23,14 @@ const HYDRATE_TIMEOUT_MS = 20_000;
 
 export const decisionTreeHydrateStepDefinition = ({
   getSandboxStart,
+  getSavedObjects,
+  getUiSettings,
   logger,
   isEnabled,
 }: {
   getSandboxStart: () => SandboxPluginStart | undefined;
+  getSavedObjects?: () => CoreStart['savedObjects'] | undefined;
+  getUiSettings?: () => CoreStart['uiSettings'] | undefined;
   logger: Logger;
   isEnabled?: () => boolean;
 }) =>
@@ -135,6 +139,9 @@ export const decisionTreeHydrateStepDefinition = ({
             conversationId,
             spaceId,
             workflowExecutionId: executionId,
+            request: context.contextManager?.getFakeRequest?.(),
+            getSavedObjects,
+            getUiSettings,
             logger,
           },
           async (span) => {

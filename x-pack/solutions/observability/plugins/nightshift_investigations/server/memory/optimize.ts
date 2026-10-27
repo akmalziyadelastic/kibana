@@ -787,8 +787,8 @@ export const applyMemoryEdits = async ({
       now,
       logger,
     });
-    if (result.appliedWrite) {
-      appliedWrites.push(result.appliedWrite);
+    if (result.appliedWrites && result.appliedWrites.length > 0) {
+      appliedWrites.push(...result.appliedWrites);
     }
     if (result.writtenId && result.mergedFromCount === 0) {
       summary.standaloneUpsertCount += 1;
@@ -817,7 +817,7 @@ interface MergeMemoryGroupResult {
   mergedFromCount: number;
   archivedSourceCount: number;
   writeFailureCount: number;
-  appliedWrite?: AppliedWriteRecord;
+  appliedWrites?: AppliedWriteRecord[];
 }
 
 const mergeMemoryGroup = async ({
@@ -1050,6 +1050,7 @@ const mergeMemoryGroup = async ({
 
   let archivedSourceCount = 0;
   let writeFailureCount = 0;
+  const archivedSourceWrites: AppliedWriteRecord[] = [];
   for (const source of committedSources) {
     const { page } = source;
     if (page.id === writtenCanonicalId) {
@@ -1066,6 +1067,15 @@ const mergeMemoryGroup = async ({
         await store.archiveVersioned(source, 'merged');
       }
       archivedSourceCount += 1;
+      archivedSourceWrites.push({
+        store: 'semantic_memory',
+        item_id: page.id,
+        action: 'archive_merged',
+        before_status: 'active',
+        after_status: 'archived',
+        before_content: page.content,
+        after_content: page.content,
+      });
     } catch (err) {
       writeFailureCount += 1;
       logger.warn('Memory merge wrote canonical but failed to archive a source');
@@ -1089,16 +1099,19 @@ const mergeMemoryGroup = async ({
     mergedFromCount,
     archivedSourceCount,
     writeFailureCount,
-    appliedWrite: {
-      store: 'semantic_memory',
-      item_id: writtenCanonicalId,
-      action: mergedFromCount > 0 ? 'merge' : beforeStatus !== undefined ? 'update' : 'create',
-      ...(beforeStatus !== undefined ? { before_status: beforeStatus } : {}),
-      after_status: 'active',
-      ...(beforeContent !== undefined ? { before_content: beforeContent } : {}),
-      ...(writtenContent !== undefined ? { after_content: writtenContent } : {}),
-      ...(replacedIds.length > 0 ? { replaced_ids: replacedIds } : {}),
-    },
+    appliedWrites: [
+      {
+        store: 'semantic_memory',
+        item_id: writtenCanonicalId,
+        action: mergedFromCount > 0 ? 'merge' : beforeStatus !== undefined ? 'update' : 'create',
+        ...(beforeStatus !== undefined ? { before_status: beforeStatus } : {}),
+        after_status: 'active',
+        ...(beforeContent !== undefined ? { before_content: beforeContent } : {}),
+        ...(writtenContent !== undefined ? { after_content: writtenContent } : {}),
+        ...(replacedIds.length > 0 ? { replaced_ids: replacedIds } : {}),
+      },
+      ...archivedSourceWrites,
+    ],
   };
 };
 

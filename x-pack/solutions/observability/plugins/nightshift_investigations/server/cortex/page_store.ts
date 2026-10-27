@@ -373,9 +373,19 @@ export const createCortexPageStore = ({
       roundId,
       workflowExecutionId,
     }: CortexPageWrite,
-    corroborations: number
+    corroborations: number,
+    existingSource?: CortexKiSource
   ): { id: string; document: CortexKiSource } => {
     const canonicalSlug = canonicalizeSlug(entityType, slug);
+    const existingAttrs = existingSource?.attributes;
+    const resolvedVersion =
+      docVersion ??
+      (typeof existingAttrs?.version === 'number' && Number.isFinite(existingAttrs.version)
+        ? existingAttrs.version + 1
+        : 1);
+    const resolvedConversationId = conversationId ?? existingAttrs?.conversation_id;
+    const resolvedRoundId = roundId ?? existingAttrs?.round_id;
+    const resolvedWorkflowExecutionId = workflowExecutionId ?? existingAttrs?.workflow_execution_id;
     return {
       id: toCortexPageId(entityType, slug),
       document: {
@@ -390,10 +400,12 @@ export const createCortexPageStore = ({
           corroborations,
           slug: canonicalSlug,
           space_id: spaceId,
-          ...(docVersion !== undefined ? { version: docVersion } : {}),
-          ...(conversationId ? { conversation_id: conversationId } : {}),
-          ...(roundId ? { round_id: roundId } : {}),
-          ...(workflowExecutionId ? { workflow_execution_id: workflowExecutionId } : {}),
+          version: resolvedVersion,
+          ...(resolvedConversationId ? { conversation_id: resolvedConversationId } : {}),
+          ...(resolvedRoundId ? { round_id: resolvedRoundId } : {}),
+          ...(resolvedWorkflowExecutionId
+            ? { workflow_execution_id: resolvedWorkflowExecutionId }
+            : {}),
         },
       },
     };
@@ -454,7 +466,8 @@ export const createCortexPageStore = ({
       const existing = await getSource(id);
       const { document } = buildDocument(
         page,
-        page.corroborations ?? toCorroborations(existing?.source.attributes?.corroborations)
+        page.corroborations ?? toCorroborations(existing?.source.attributes?.corroborations),
+        existing?.source
       );
 
       const response = await esClient.index(

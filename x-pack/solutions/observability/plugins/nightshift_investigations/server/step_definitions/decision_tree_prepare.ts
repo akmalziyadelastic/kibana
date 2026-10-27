@@ -8,7 +8,7 @@
 import { z } from '@kbn/zod/v4';
 import { StepCategory } from '@kbn/workflows';
 import { createServerStepDefinition } from '@kbn/workflows-extensions/server';
-import type { Logger } from '@kbn/core/server';
+import type { CoreStart, Logger } from '@kbn/core/server';
 import { usesDecisionTrees } from '../agents/agent_policy';
 import type { InvestigationToolCall } from '../decision_trees/accessed_trees';
 import { prepareReinforcementTurn } from '../decision_trees/register_decision_trees';
@@ -20,10 +20,14 @@ const MAX_INPUT_CHARS = 100_000;
 
 export const decisionTreePrepareStepDefinition = ({
   getTelemetryConnectorId,
+  getSavedObjects,
+  getUiSettings,
   logger,
   isEnabled,
 }: {
   getTelemetryConnectorId: () => string | undefined;
+  getSavedObjects?: () => CoreStart['savedObjects'] | undefined;
+  getUiSettings?: () => CoreStart['uiSettings'] | undefined;
   logger: Logger;
   isEnabled?: () => boolean;
 }) =>
@@ -107,6 +111,9 @@ export const decisionTreePrepareStepDefinition = ({
           traceId: context.input.background_trace_id || executionId,
           spaceId,
           workflowExecutionId: executionId,
+          request: context.contextManager?.getFakeRequest?.(),
+          getSavedObjects,
+          getUiSettings,
           logger,
         },
         async (span) => {

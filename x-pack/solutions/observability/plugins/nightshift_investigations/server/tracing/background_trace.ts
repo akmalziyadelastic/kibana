@@ -13,6 +13,7 @@ import {
   trace,
   TraceFlags,
   type Attributes,
+  type AttributeValue,
   type Link,
   type Span,
   type SpanContext,
@@ -45,6 +46,11 @@ export const DEFAULT_BACKGROUND_PRIVACY_SETTINGS: TracingPrivacySettings = {
   includeUserData: false,
 };
 
+const DISABLED_PRIVACY_SETTINGS: TracingPrivacySettings = {
+  ...DEFAULT_BACKGROUND_PRIVACY_SETTINGS,
+  enabled: false,
+};
+
 export const isValidOtelTraceId = (value: string | undefined): value is string =>
   typeof value === 'string' && /^[0-9a-f]{32}$/.test(value) && value !== ZERO_TRACE_ID;
 
@@ -75,6 +81,94 @@ export const toDeterministicSpanId = (seed: string): string => {
   const hashed = crypto.createHash('sha256').update(seed).digest('hex').slice(0, 16);
   return hashed === ZERO_SPAN_ID ? '1000000000000000' : hashed;
 };
+
+const hashSensitiveId = (value: string): string =>
+  crypto.createHash('sha256').update(value).digest('hex').slice(0, 16);
+
+const SENSITIVE_ID_ATTR_KEYS = new Set<string>([
+  'nightshift.conversation_id',
+  'nightshift.reinforcement_conversation_id',
+  'nightshift.round_id',
+  'nightshift.workflow_execution_id',
+]);
+
+/**
+ * Applies `TracingPrivacySettings` to `nightshift.*` custom attributes before recording on a span:
+ * - When `includeRealIds` is false, hashes conversation, round, and workflow execution IDs.
+ * - When `includeLlmResponses` or `includeToolDetails` is false, strips `before_content` and
+ *   `after_content` from `nightshift.applied_writes` while keeping store/id/action/version metadata.
+ */
+export const sanitizeNightshiftAttributeValue = (
+  key: string,
+  value: AttributeValue | undefined,
+  privacySettings: TracingPrivacySettings
+): AttributeValue | undefined => {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  if (!privacySettings.includeRealIds && SENSITIVE_ID_ATTR_KEYS.has(key) && value.length > 0) {
+    return hashSensitiveId(value);
+  }
+  if (
+    key === 'nightshift.applied_writes' &&
+    (!privacySettings.includeLlmResponses || !privacySettings.includeToolDetails)
+  ) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        const redacted = parsed.map((entry) => {
+          if (!entry || typeof entry !== 'object') {
+            return entry;
+          }
+          const {
+            before_content: _beforeContent,
+            after_content: _afterContent,
+            ...metadataOnly
+          } = entry as Record<string, unknown>;
+          return metadataOnly;
+        });
+        return JSON.stringify(redacted);
+      }
+    } catch {
+      return '[]';
+    }
+  }
+  return value;
+};
+
+const sanitizeAttributesObject = (
+  attrs: Attributes,
+  privacySettings: TracingPrivacySettings
+): Attributes => {
+  const out: Attributes = {};
+  for (const [key, value] of Object.entries(attrs)) {
+    out[key] = sanitizeNightshiftAttributeValue(key, value, privacySettings);
+  }
+  return out;
+};
+
+const createPrivacyFilteredSpan = (span: Span, privacySettings: TracingPrivacySettings): Span =>
+  new Proxy(span, {
+    get(target, prop, receiver) {
+      if (prop === 'setAttribute') {
+        return (key: string, value: AttributeValue) => {
+          const sanitized = sanitizeNightshiftAttributeValue(key, value, privacySettings);
+          if (sanitized !== undefined) {
+            target.setAttribute(key, sanitized);
+          }
+          return receiver;
+        };
+      }
+      if (prop === 'setAttributes') {
+        return (attrs: Attributes) => {
+          target.setAttributes(sanitizeAttributesObject(attrs, privacySettings));
+          return receiver;
+        };
+      }
+      const val = Reflect.get(target, prop, target);
+      return typeof val === 'function' ? val.bind(target) : val;
+    },
+  });
 
 export interface NightshiftBackgroundSpanOptions {
   name: string;
@@ -123,7 +217,8 @@ const resolvePrivacySettings = async (
       });
     }
   }
-  return DEFAULT_BACKGROUND_PRIVACY_SETTINGS;
+  // Fail closed when privacy settings cannot be resolved for the target space.
+  return DISABLED_PRIVACY_SETTINGS;
 };
 
 /**
@@ -155,6 +250,11 @@ export const withNightshiftBackgroundSpan = async <T>(
       : toDeterministicSpanId(`${resolvedTraceId}:nightshift.background`);
 
   const foregroundTraceId = toDeterministicTraceId(options.foregroundTraceId);
+  const rawRoundAttr = sanitizeNightshiftAttributeValue(
+    'nightshift.round_id',
+    options.roundId,
+    privacySettings
+  );
   const links: Link[] =
     foregroundTraceId && isValidOtelTraceId(foregroundTraceId)
       ? [
@@ -167,11 +267,27 @@ export const withNightshiftBackgroundSpan = async <T>(
             },
             attributes: {
               'nightshift.link_type': 'foreground_round',
-              ...(options.roundId ? { 'nightshift.round_id': options.roundId } : {}),
+              ...(rawRoundAttr ? { 'nightshift.round_id': rawRoundAttr } : {}),
             },
           },
         ]
       : [];
+
+  const initialAttributes = sanitizeAttributesObject(
+    {
+      [ElasticGenAIAttributes.InferenceSpanKind]: 'CHAIN',
+      [GenAISemanticConventions.GenAIOperationName]: 'invoke_workflow',
+      'nightshift.background_trace_id': resolvedTraceId,
+      ...(foregroundTraceId ? { 'nightshift.foreground_trace_id': foregroundTraceId } : {}),
+      ...(options.conversationId ? { 'nightshift.conversation_id': options.conversationId } : {}),
+      ...(options.roundId ? { 'nightshift.round_id': options.roundId } : {}),
+      ...(options.workflowExecutionId
+        ? { 'nightshift.workflow_execution_id': options.workflowExecutionId }
+        : {}),
+      ...options.attributes,
+    },
+    privacySettings
+  );
 
   return withAgentBuilderContext(
     () => {
@@ -195,22 +311,10 @@ export const withNightshiftBackgroundSpan = async <T>(
           {
             kind: SpanKind.INTERNAL,
             ...(links.length > 0 ? { links } : {}),
-            attributes: {
-              [ElasticGenAIAttributes.InferenceSpanKind]: 'CHAIN',
-              [GenAISemanticConventions.GenAIOperationName]: 'invoke_workflow',
-              'nightshift.background_trace_id': resolvedTraceId,
-              ...(foregroundTraceId ? { 'nightshift.foreground_trace_id': foregroundTraceId } : {}),
-              ...(options.conversationId
-                ? { 'nightshift.conversation_id': options.conversationId }
-                : {}),
-              ...(options.roundId ? { 'nightshift.round_id': options.roundId } : {}),
-              ...(options.workflowExecutionId
-                ? { 'nightshift.workflow_execution_id': options.workflowExecutionId }
-                : {}),
-              ...options.attributes,
-            },
+            attributes: initialAttributes,
           },
-          (span) => Promise.resolve(fn(span))
+          (span) =>
+            Promise.resolve(fn(span ? createPrivacyFilteredSpan(span, privacySettings) : undefined))
         )
       );
     },

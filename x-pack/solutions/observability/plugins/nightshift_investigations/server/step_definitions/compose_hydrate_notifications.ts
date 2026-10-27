@@ -8,10 +8,17 @@
 import { z } from '@kbn/zod/v4';
 import { StepCategory } from '@kbn/workflows';
 import { createServerStepDefinition } from '@kbn/workflows-extensions/server';
+import type { CoreStart } from '@kbn/core/server';
 import { composeHydrateNotificationContext } from '../lib/hydrate_notification';
 import { withNightshiftBackgroundSpan } from '../tracing';
 
-export const composeHydrateNotificationsStepDefinition = () =>
+export const composeHydrateNotificationsStepDefinition = ({
+  getSavedObjects,
+  getUiSettings,
+}: {
+  getSavedObjects?: () => CoreStart['savedObjects'] | undefined;
+  getUiSettings?: () => CoreStart['uiSettings'] | undefined;
+} = {}) =>
   createServerStepDefinition({
     id: 'nightshift.composeHydrateNotifications',
     label: 'Compose Nightshift Hydrate Notifications',
@@ -84,6 +91,9 @@ export const composeHydrateNotificationsStepDefinition = () =>
             traceId: candidateTraceId,
             spaceId,
             workflowExecutionId: executionId,
+            request: context.contextManager?.getFakeRequest?.(),
+            getSavedObjects,
+            getUiSettings,
             logger: context.logger,
             attributes: {
               'nightshift.recalled_ids': JSON.stringify(context.input.recalled_ids),

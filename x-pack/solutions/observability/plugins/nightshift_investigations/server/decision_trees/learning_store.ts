@@ -80,6 +80,13 @@ const titleFor = (record: {
 };
 
 export interface LearningStore {
+  /** Reads the existing learning slot if present. */
+  get?: (input: {
+    kind: LearningKind;
+    treeId: string;
+    category?: SystemLearningCategory | ToolLearningCategory;
+    connectorName?: string;
+  }) => Promise<LearningRecord | undefined>;
   /** Replaces the slot for this tree/kind/category/connector and returns the stored record. */
   record: (input: {
     kind: LearningKind;
@@ -128,6 +135,22 @@ export const createLearningStore = ({
   signal?: AbortSignal;
 }): LearningStore => {
   return {
+    get: async ({ kind, treeId, category, connectorName }) => {
+      if (typeof esClient.get !== 'function') {
+        return undefined;
+      }
+      const id = learningDocId(spaceId, { kind, treeId, category, connectorName });
+      try {
+        const res = await esClient.get<DecisionTreeLearningSource>(
+          { index: DECISION_TREE_AI_INDEX_DEST, id },
+          { signal }
+        );
+        return res._source ? toRecord(res._source) : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+
     record: async ({
       kind,
       treeId,
