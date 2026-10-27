@@ -8,7 +8,7 @@
 import { z } from '@kbn/zod/v4';
 import { StepCategory } from '@kbn/workflows';
 import { createServerStepDefinition } from '@kbn/workflows-extensions/server';
-import type { Logger } from '@kbn/core/server';
+import type { CoreStart, Logger } from '@kbn/core/server';
 import {
   DEFAULT_EVALUATOR_VERSION,
   NIGHTSHIFT_MEMORY_JUDGES_MONITOR_ID,
@@ -20,9 +20,15 @@ import { withTimeout } from './with_timeout';
 const JUDGES_TIMEOUT_MS = 180_000;
 
 export const memoryScheduledJudgesStepDefinition = ({
+  getDataStreams,
+  getSavedObjects,
+  getUiSettings,
   logger,
   isEnabled,
 }: {
+  getDataStreams?: () => CoreStart['dataStreams'] | undefined;
+  getSavedObjects?: () => CoreStart['savedObjects'] | undefined;
+  getUiSettings?: () => CoreStart['uiSettings'] | undefined;
   logger: Logger;
   isEnabled?: () => boolean;
 }) =>
@@ -94,10 +100,15 @@ export const memoryScheduledJudgesStepDefinition = ({
       }
 
       const { workflow } = context.contextManager.getContext();
+      const request = context.contextManager?.getFakeRequest?.();
       const summary = await withTimeout(
         (signal) =>
           runScheduledMemoryJudges({
             esClient: context.contextManager.getScopedEsClient(),
+            dataStreams: getDataStreams?.(),
+            request,
+            getSavedObjects,
+            getUiSettings,
             spaceId: workflow.spaceId,
             windowMinutes: context.input.window_minutes ?? 60,
             lagMinutes: context.input.lag_minutes ?? 2,

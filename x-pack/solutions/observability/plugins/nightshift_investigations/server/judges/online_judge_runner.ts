@@ -6,8 +6,9 @@
  */
 
 import { createHash } from 'crypto';
-import type { ElasticsearchClient, Logger } from '@kbn/core/server';
+import type { CoreStart, ElasticsearchClient, KibanaRequest, Logger } from '@kbn/core/server';
 import { isResponseError } from '@kbn/es-errors';
+import type { TracingPrivacySettings } from '@kbn/agent-builder-plugin/server';
 import type { AppliedWriteRecord } from '../investigation_round';
 import { withNightshiftBackgroundSpan } from '../tracing';
 
@@ -90,6 +91,11 @@ const termsOrKeywordFilter = (field: string, values: string[]) => ({
   },
 });
 
+interface OnlineScoreHitSource {
+  trace_id?: string;
+  score?: { name?: string };
+}
+
 /**
  * Queries `.evaluation-online-scores` to find which candidate `trace_id`s already have a score
  * recorded for `(evaluatorName, evaluatorVersion, scoreName)` in `spaceId`.
@@ -122,7 +128,7 @@ export const findAlreadyJudgedTraceIds = async ({
   }
 
   try {
-    const response = await esClient.search<{ trace_id?: string }>(
+    const response = await esClient.search<OnlineScoreHitSource>(
       {
         index: ONLINE_SCORES_DATA_STREAM,
         ignore_unavailable: true,
@@ -161,17 +167,86 @@ export const findAlreadyJudgedTraceIds = async ({
 };
 
 /**
+ * Queries `.evaluation-online-scores` for existing write-judge `(trace_id, score.name)` keys
+ * (`"${trace_id}::${score.name}"`, or `"${trace_id}::*"` when `score.name` is omitted in a mock)
+ * so partial bulk write failures only skip the specific items that were already scored.
+ */
+const findAlreadyJudgedWriteScoreKeys = async ({
+  esClient,
+  spaceId,
+  traceIds,
+  evaluatorVersion,
+  monitorId = NIGHTSHIFT_MEMORY_JUDGES_MONITOR_ID,
+  signal,
+}: {
+  esClient: ElasticsearchClient;
+  spaceId: string;
+  traceIds: readonly string[];
+  evaluatorVersion: string;
+  monitorId?: string;
+  signal?: AbortSignal;
+}): Promise<Set<string>> => {
+  const uniqueTraceIds = [...new Set(traceIds.filter(Boolean))];
+  if (uniqueTraceIds.length === 0) {
+    return new Set();
+  }
+
+  try {
+    const response = await esClient.search<OnlineScoreHitSource>(
+      {
+        index: ONLINE_SCORES_DATA_STREAM,
+        ignore_unavailable: true,
+        allow_no_indices: true,
+        size: Math.min(uniqueTraceIds.length * 10, 2_000),
+        _source: ['trace_id', 'score.name'],
+        query: {
+          bool: {
+            filter: [
+              termOrKeywordFilter('space_ids', spaceId),
+              termOrKeywordFilter('monitor.id', monitorId),
+              termsOrKeywordFilter('trace_id', uniqueTraceIds),
+              termOrKeywordFilter('evaluator.name', WRITE_JUDGE_EVALUATOR_NAME),
+              termOrKeywordFilter('evaluator.version', evaluatorVersion),
+            ],
+          },
+        },
+      },
+      { signal }
+    );
+
+    const keys = new Set<string>();
+    for (const hit of response.hits.hits) {
+      const traceId = hit._source?.trace_id;
+      if (!traceId) continue;
+      const scoreName = hit._source?.score?.name;
+      keys.add(scoreName ? `${traceId}::${scoreName}` : `${traceId}::*`);
+    }
+    return keys;
+  } catch (error) {
+    if (isIndexNotFoundError(error)) {
+      return new Set();
+    }
+    throw error;
+  }
+};
+
+/**
  * Writes online score documents to `.evaluation-online-scores` with `op_type: 'create'` and
  * deterministic SHA-256 document IDs so duplicate `(trace_id, evaluator.name, evaluator.version, score.name)`
  * entries are idempotently skipped (`409 Conflict`).
+ *
+ * When `dataStreams` is provided, initializes the registered `.evaluation-online-scores` data stream
+ * first so fresh deployments get the managed Evals keyword mappings and retention policy.
  */
 export const ingestOnlineScores = async ({
   esClient,
+  dataStreams,
   documents,
   logger,
   signal,
 }: {
   esClient: ElasticsearchClient;
+  dataStreams?: CoreStart['dataStreams'];
   documents: ReadonlyArray<Omit<OnlineScoreRecord, '@timestamp'>>;
   logger: Pick<Logger, 'warn' | 'debug'>;
   signal?: AbortSignal;
@@ -181,27 +256,50 @@ export const ingestOnlineScores = async ({
   }
 
   const timestamp = new Date().toISOString();
-  const operations = documents.flatMap((doc) => {
+  const docsWithId = documents.map((doc) => {
     const payload: OnlineScoreRecord = {
       '@timestamp': timestamp,
       ...doc,
     };
-    const id = computeOnlineScoreDocumentId(payload);
-    return [{ create: { _index: ONLINE_SCORES_DATA_STREAM, _id: id } }, payload];
+    return {
+      _id: computeOnlineScoreDocumentId(payload),
+      ...payload,
+    };
   });
 
-  const response = await esClient.bulk(
-    {
-      refresh: 'wait_for',
-      operations,
-    },
-    { signal }
-  );
+  let responseItems: Array<{
+    create?: { status?: number; error?: { reason?: string; type?: string } };
+  }>;
+
+  if (dataStreams && typeof dataStreams.initializeClient === 'function') {
+    const dsClient = await dataStreams.initializeClient(ONLINE_SCORES_DATA_STREAM);
+    if (dsClient && typeof dsClient.create === 'function') {
+      const dsRes = await dsClient.create({
+        documents: docsWithId,
+        refresh: 'wait_for',
+      });
+      responseItems = dsRes.items ?? [];
+    } else {
+      const operations = docsWithId.flatMap(({ _id, ...payload }) => [
+        { create: { _index: ONLINE_SCORES_DATA_STREAM, _id } },
+        payload,
+      ]);
+      const bulkRes = await esClient.bulk({ refresh: 'wait_for', operations }, { signal });
+      responseItems = bulkRes.items ?? [];
+    }
+  } else {
+    const operations = docsWithId.flatMap(({ _id, ...payload }) => [
+      { create: { _index: ONLINE_SCORES_DATA_STREAM, _id } },
+      payload,
+    ]);
+    const bulkRes = await esClient.bulk({ refresh: 'wait_for', operations }, { signal });
+    responseItems = bulkRes.items ?? [];
+  }
 
   let skipped = 0;
   const errors: Array<{ index: number; status: number; reason: string }> = [];
 
-  (response.items ?? []).forEach((item, index) => {
+  responseItems.forEach((item, index) => {
     const createItem = item.create;
     const status = createItem?.status;
     if (!status) {
@@ -280,10 +378,17 @@ const readAttr = (attrs: Record<string, unknown> | undefined, key: string): unkn
   return cur;
 };
 
+const OPTIMIZE_COMPLETION_SPAN_NAMES = [
+  'nightshift.cortexOptimize',
+  'nightshift.memoryOptimize',
+  'nightshift.decisionTreePrepare',
+  'nightshift.decisionTreeReinforce',
+];
+
 /**
- * Queries `traces-agent_builder.otel-<spaceId>` for recent `T_background` spans (`nightshift.*`)
- * within `[now - windowMinutes - lagMinutes, now - lagMinutes]` and groups them into candidate
- * background rounds.
+ * Queries `traces-agent_builder.otel-<spaceId>` for completed `T_background` rounds within
+ * `[now - windowMinutes - lagMinutes, now - lagMinutes]`, then fetches the complete span set
+ * for each candidate `trace_id` and aggregates recalled/hydrated IDs, opened IDs, and applied writes.
  */
 export const fetchCandidateBackgroundRounds = async ({
   esClient,
@@ -304,7 +409,8 @@ export const fetchCandidateBackgroundRounds = async ({
   const totalWindowMinutes = windowMinutes + lagMinutes;
 
   try {
-    const response = await esClient.search<RawTraceSpanDoc>(
+    // 1. Discover completed background rounds (requiring an optimize-phase span or attributes)
+    const discoveryResponse = await esClient.search<RawTraceSpanDoc>(
       {
         index,
         ignore_unavailable: true,
@@ -323,6 +429,67 @@ export const fetchCandidateBackgroundRounds = async ({
                 },
               },
               { exists: { field: 'attributes.nightshift.background_trace_id' } },
+              {
+                bool: {
+                  should: [
+                    ...OPTIMIZE_COMPLETION_SPAN_NAMES.map((spanName) =>
+                      termOrKeywordFilter('name', spanName)
+                    ),
+                    { exists: { field: 'attributes.nightshift.opened_ids' } },
+                    { exists: { field: 'attributes.nightshift.opened_tree_ids' } },
+                    { exists: { field: 'attributes.nightshift.applied_writes' } },
+                  ],
+                  minimum_should_match: 1,
+                },
+              },
+            ],
+          },
+        },
+      },
+      { signal }
+    );
+
+    const discoveredTraceIds: string[] = [];
+    const seenTraceIds = new Set<string>();
+    for (const hit of discoveryResponse.hits.hits) {
+      const source = hit._source;
+      if (!source) continue;
+      const bgTraceId = String(
+        readAttr(source.attributes, 'nightshift.background_trace_id') ?? source.trace_id ?? ''
+      ).trim();
+      if (!bgTraceId || seenTraceIds.has(bgTraceId)) continue;
+      seenTraceIds.add(bgTraceId);
+      discoveredTraceIds.push(bgTraceId);
+      if (discoveredTraceIds.length >= maxCandidates) break;
+    }
+
+    if (discoveredTraceIds.length === 0) {
+      return [];
+    }
+
+    // 2. Fetch all spans belonging to the discovered candidate trace IDs so no span is truncated by pagination
+    const fullSpansResponse = await esClient.search<RawTraceSpanDoc>(
+      {
+        index,
+        ignore_unavailable: true,
+        allow_no_indices: true,
+        size: Math.min(discoveredTraceIds.length * 20, 2_000),
+        sort: [{ '@timestamp': { order: 'asc', unmapped_type: 'date' } }],
+        query: {
+          bool: {
+            filter: [
+              {
+                bool: {
+                  should: [
+                    termsOrKeywordFilter('trace_id', discoveredTraceIds),
+                    termsOrKeywordFilter(
+                      'attributes.nightshift.background_trace_id',
+                      discoveredTraceIds
+                    ),
+                  ],
+                  minimum_should_match: 1,
+                },
+              },
             ],
           },
         },
@@ -341,29 +508,30 @@ export const fetchCandidateBackgroundRounds = async ({
         recalledIds: Set<string>;
         openedIds: Set<string>;
         appliedWrites: AppliedWriteRecord[];
+        seenWriteKeys: Set<string>;
       }
     >();
 
-    for (const hit of response.hits.hits) {
+    for (const traceId of discoveredTraceIds) {
+      byTraceId.set(traceId, {
+        traceId,
+        recalledIds: new Set<string>(),
+        openedIds: new Set<string>(),
+        appliedWrites: [],
+        seenWriteKeys: new Set<string>(),
+      });
+    }
+
+    const allHits = [...discoveryResponse.hits.hits, ...fullSpansResponse.hits.hits];
+    for (const hit of allHits) {
       const source = hit._source;
       if (!source) continue;
       const attrs = source.attributes;
       const bgTraceId = String(
         readAttr(attrs, 'nightshift.background_trace_id') ?? source.trace_id ?? ''
       ).trim();
-      if (!bgTraceId) continue;
-
-      let entry = byTraceId.get(bgTraceId);
-      if (!entry) {
-        if (byTraceId.size >= maxCandidates) continue;
-        entry = {
-          traceId: bgTraceId,
-          recalledIds: new Set<string>(),
-          openedIds: new Set<string>(),
-          appliedWrites: [],
-        };
-        byTraceId.set(bgTraceId, entry);
-      }
+      const entry = byTraceId.get(bgTraceId);
+      if (!entry) continue;
 
       const fgTrace = readAttr(attrs, 'nightshift.foreground_trace_id');
       if (typeof fgTrace === 'string' && fgTrace) entry.foregroundTraceId ??= fgTrace;
@@ -390,6 +558,9 @@ export const fetchCandidateBackgroundRounds = async ({
       for (const id of parseJsonArrayAttr<string>(readAttr(attrs, 'nightshift.recalled_ids'))) {
         if (typeof id === 'string') entry.recalledIds.add(id);
       }
+      for (const id of parseJsonArrayAttr<string>(readAttr(attrs, 'nightshift.hydrated_ids'))) {
+        if (typeof id === 'string') entry.recalledIds.add(id);
+      }
       for (const id of parseJsonArrayAttr<string>(readAttr(attrs, 'nightshift.opened_ids'))) {
         if (typeof id === 'string') entry.openedIds.add(id);
       }
@@ -400,7 +571,11 @@ export const fetchCandidateBackgroundRounds = async ({
         readAttr(attrs, 'nightshift.applied_writes')
       )) {
         if (write && typeof write === 'object' && typeof write.item_id === 'string') {
-          entry.appliedWrites.push(write);
+          const writeKey = `${write.store}:${write.item_id}:${write.action}:${write.version ?? ''}`;
+          if (!entry.seenWriteKeys.has(writeKey)) {
+            entry.seenWriteKeys.add(writeKey);
+            entry.appliedWrites.push(write);
+          }
         }
       }
     }
@@ -481,6 +656,11 @@ const defaultEvaluateWrite: EvaluateWriteCandidate = async (_candidate, write) =
 
 export interface RunScheduledMemoryJudgesOptions {
   esClient: ElasticsearchClient;
+  dataStreams?: CoreStart['dataStreams'];
+  request?: KibanaRequest;
+  getSavedObjects?: () => CoreStart['savedObjects'] | undefined;
+  getUiSettings?: () => CoreStart['uiSettings'] | undefined;
+  privacySettings?: TracingPrivacySettings;
   spaceId: string;
   windowMinutes?: number;
   lagMinutes?: number;
@@ -504,16 +684,32 @@ export interface ScheduledMemoryJudgesRunSummary {
   errorCount: number;
 }
 
+const writeScoreNameFor = (write: AppliedWriteRecord): string =>
+  `memory_write_quality:${write.store}:${write.item_id}`;
+
+const isWriteScoreAlreadyJudged = (
+  alreadyWriteJudgedKeys: ReadonlySet<string>,
+  traceId: string,
+  write: AppliedWriteRecord
+): boolean =>
+  alreadyWriteJudgedKeys.has(`${traceId}::*`) ||
+  alreadyWriteJudgedKeys.has(`${traceId}::${writeScoreNameFor(write)}`);
+
 /**
  * Runs a scheduled judge pass over recent `T_background` traces:
  *  1. Fetches candidate rounds from `traces-agent_builder.otel-<spaceId>` (or `candidatesOverride`).
- *  2. Filters out traces already judged under `(evaluatorName, evaluatorVersion)` in `.evaluation-online-scores`.
+ *  2. Filters out traces/writes already judged under `(evaluatorName, evaluatorVersion)` in `.evaluation-online-scores`.
  *  3. Applies deterministic subsampling (`sampleRate`) and `maxTracesPerRun` cap.
  *  4. Emits `nightshift.readJudge` and `nightshift.writeJudge` spans under each candidate's `T_background`.
  *  5. Writes versioned scores into `.evaluation-online-scores` with SHA-256 deduplication (`409` -> `skipped`).
  */
 export const runScheduledMemoryJudges = async ({
   esClient,
+  dataStreams,
+  request,
+  getSavedObjects,
+  getUiSettings,
+  privacySettings,
   spaceId,
   windowMinutes = 60,
   lagMinutes = 2,
@@ -550,7 +746,7 @@ export const runScheduledMemoryJudges = async ({
   }
 
   const candidateTraceIds = candidates.map((c) => c.traceId);
-  const [alreadyReadJudged, alreadyWriteJudged] = await Promise.all([
+  const [alreadyReadJudged, alreadyWriteJudgedKeys] = await Promise.all([
     findAlreadyJudgedTraceIds({
       esClient,
       spaceId,
@@ -560,11 +756,10 @@ export const runScheduledMemoryJudges = async ({
       monitorId,
       signal,
     }),
-    findAlreadyJudgedTraceIds({
+    findAlreadyJudgedWriteScoreKeys({
       esClient,
       spaceId,
       traceIds: candidateTraceIds,
-      evaluatorName: WRITE_JUDGE_EVALUATOR_NAME,
       evaluatorVersion,
       monitorId,
       signal,
@@ -575,8 +770,9 @@ export const runScheduledMemoryJudges = async ({
     const needsReadJudge =
       (candidate.recalledIds.length > 0 || candidate.openedIds.length > 0) &&
       !alreadyReadJudged.has(candidate.traceId);
-    const needsWriteJudge =
-      candidate.appliedWrites.length > 0 && !alreadyWriteJudged.has(candidate.traceId);
+    const needsWriteJudge = candidate.appliedWrites.some(
+      (write) => !isWriteScoreAlreadyJudged(alreadyWriteJudgedKeys, candidate.traceId, write)
+    );
     return needsReadJudge || needsWriteJudge;
   });
 
@@ -602,6 +798,10 @@ export const runScheduledMemoryJudges = async ({
           conversationId: candidate.conversationId,
           spaceId,
           workflowExecutionId: candidate.workflowExecutionId,
+          request,
+          getSavedObjects,
+          getUiSettings,
+          privacySettings,
           logger,
           attributes: {
             'evaluator.name': READ_JUDGE_EVALUATOR_NAME,
@@ -635,58 +835,64 @@ export const runScheduledMemoryJudges = async ({
       });
     }
 
-    if (candidate.appliedWrites.length > 0 && !alreadyWriteJudged.has(candidate.traceId)) {
-      for (const write of candidate.appliedWrites) {
-        const writeVerdict = await withNightshiftBackgroundSpan(
-          {
-            name: 'nightshift.writeJudge',
-            traceId: candidate.traceId,
-            foregroundTraceId: candidate.foregroundTraceId,
-            roundId: candidate.roundId,
-            conversationId: candidate.conversationId,
-            spaceId,
-            workflowExecutionId: candidate.workflowExecutionId,
-            logger,
-            attributes: {
-              'evaluator.name': WRITE_JUDGE_EVALUATOR_NAME,
-              'evaluator.version': evaluatorVersion,
-              'nightshift.memory_store': write.store,
-              'nightshift.item_id': write.item_id,
-            },
-          },
-          async () => evaluateWrite(candidate, write)
-        );
-
-        scoreDocuments.push({
-          space_ids: [spaceId],
-          trace_id: candidate.traceId,
-          monitor: { id: monitorId, name: monitorName },
-          evaluator: { name: WRITE_JUDGE_EVALUATOR_NAME, version: evaluatorVersion },
-          score: {
-            name: `memory_write_quality:${write.store}:${write.item_id}`,
-            value: writeVerdict.value,
-            label: writeVerdict.label,
-            explanation: writeVerdict.explanation,
-            metadata: {
-              ...(candidate.roundId ? { round_id: candidate.roundId } : {}),
-              ...(candidate.conversationId ? { conversation_id: candidate.conversationId } : {}),
-              ...(candidate.foregroundTraceId
-                ? { foreground_trace_id: candidate.foregroundTraceId }
-                : {}),
-              memory_store: write.store,
-              item_id: write.item_id,
-              action: write.action,
-              ...(write.version !== undefined ? { version: write.version } : {}),
-              reason_code: writeVerdict.reasonCode,
-            },
-          },
-        });
+    for (const write of candidate.appliedWrites) {
+      if (isWriteScoreAlreadyJudged(alreadyWriteJudgedKeys, candidate.traceId, write)) {
+        continue;
       }
+      const writeVerdict = await withNightshiftBackgroundSpan(
+        {
+          name: 'nightshift.writeJudge',
+          traceId: candidate.traceId,
+          foregroundTraceId: candidate.foregroundTraceId,
+          roundId: candidate.roundId,
+          conversationId: candidate.conversationId,
+          spaceId,
+          workflowExecutionId: candidate.workflowExecutionId,
+          request,
+          getSavedObjects,
+          getUiSettings,
+          privacySettings,
+          logger,
+          attributes: {
+            'evaluator.name': WRITE_JUDGE_EVALUATOR_NAME,
+            'evaluator.version': evaluatorVersion,
+            'nightshift.memory_store': write.store,
+            'nightshift.item_id': write.item_id,
+          },
+        },
+        async () => evaluateWrite(candidate, write)
+      );
+
+      scoreDocuments.push({
+        space_ids: [spaceId],
+        trace_id: candidate.traceId,
+        monitor: { id: monitorId, name: monitorName },
+        evaluator: { name: WRITE_JUDGE_EVALUATOR_NAME, version: evaluatorVersion },
+        score: {
+          name: writeScoreNameFor(write),
+          value: writeVerdict.value,
+          label: writeVerdict.label,
+          explanation: writeVerdict.explanation,
+          metadata: {
+            ...(candidate.roundId ? { round_id: candidate.roundId } : {}),
+            ...(candidate.conversationId ? { conversation_id: candidate.conversationId } : {}),
+            ...(candidate.foregroundTraceId
+              ? { foreground_trace_id: candidate.foregroundTraceId }
+              : {}),
+            memory_store: write.store,
+            item_id: write.item_id,
+            action: write.action,
+            ...(write.version !== undefined ? { version: write.version } : {}),
+            reason_code: writeVerdict.reasonCode,
+          },
+        },
+      });
     }
   }
 
   const ingestResult = await ingestOnlineScores({
     esClient,
+    dataStreams,
     documents: scoreDocuments,
     logger,
     signal,

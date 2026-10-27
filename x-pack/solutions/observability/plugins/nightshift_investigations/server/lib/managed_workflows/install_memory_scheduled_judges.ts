@@ -5,16 +5,18 @@
  * 2.0.
  */
 
+import { DEFAULT_SPACE_ID } from '@kbn/core-spaces-common';
 import { NIGHTSHIFT_MEMORY_SCHEDULED_JUDGES_WORKFLOW_ID } from '@kbn/workflows/managed';
-import { GLOBAL_WORKFLOW_SPACE_ID } from '@kbn/workflows/server';
 import type { PluginScopedManagedWorkflowsApi } from '@kbn/workflows/server/types';
 
 export const installMemoryScheduledJudgesWorkflow = async ({
   client,
+  spaceId = DEFAULT_SPACE_ID,
 }: {
   client: PluginScopedManagedWorkflowsApi;
+  spaceId?: string;
 }): Promise<void> => {
   await client.install(NIGHTSHIFT_MEMORY_SCHEDULED_JUDGES_WORKFLOW_ID, {
-    spaceId: GLOBAL_WORKFLOW_SPACE_ID,
+    spaceId,
   });
 };

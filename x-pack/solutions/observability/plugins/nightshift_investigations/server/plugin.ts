@@ -132,6 +132,7 @@ export class NightshiftInvestigationsPlugin
   private ruleRegistry?: NightshiftInvestigationsStartDeps['ruleRegistry'];
   private alertingVTwo?: NightshiftInvestigationsStartDeps['alertingVTwo'];
   private elasticsearch?: ElasticsearchServiceStart;
+  private dataStreams?: CoreStart['dataStreams'];
   private savedObjects?: CoreStart['savedObjects'];
   private uiSettings?: CoreStart['uiSettings'];
   private featureFlags?: CoreStart['featureFlags'];
@@ -502,6 +503,9 @@ export class NightshiftInvestigationsPlugin
         );
         plugins.workflowsExtensions.registerStepDefinition(
           memoryScheduledJudgesStepDefinition({
+            getDataStreams: () => this.dataStreams,
+            getSavedObjects: () => this.savedObjects,
+            getUiSettings: () => this.uiSettings,
             logger: this.logger.get('memory_judges'),
             isEnabled: () => this.cortexEnabled || this.memoryEnabled,
           })
@@ -608,6 +612,7 @@ export class NightshiftInvestigationsPlugin
     this.ruleRegistry = plugins.ruleRegistry;
     this.alertingVTwo = plugins.alertingVTwo;
     this.elasticsearch = coreStart.elasticsearch;
+    this.dataStreams = coreStart.dataStreams;
     this.savedObjects = coreStart.savedObjects;
     this.uiSettings = coreStart.uiSettings;
     this.featureFlags = coreStart.featureFlags;

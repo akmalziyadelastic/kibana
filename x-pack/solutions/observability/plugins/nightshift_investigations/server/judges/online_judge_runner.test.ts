@@ -91,11 +91,31 @@ describe('server/judges/online_judge_runner', () => {
           _id: expect.stringMatching(/^[0-9a-f]{64}$/),
         },
       });
+
+      const dsCreate = jest.fn().mockResolvedValue({ items: [{ create: { status: 201 } }] });
+      const initializeClient = jest.fn().mockResolvedValue({ create: dsCreate });
+      const dsSummary = await ingestOnlineScores({
+        esClient,
+        dataStreams: { initializeClient } as never,
+        logger,
+        documents: [
+          {
+            space_ids: ['default'],
+            trace_id: 'trace-3',
+            monitor: { id: 'm1', name: 'M1' },
+            evaluator: { name: READ_JUDGE_EVALUATOR_NAME, version: 'v1' },
+            score: { name: 'memory_read_utility', value: 1 },
+          },
+        ],
+      });
+      expect(dsSummary).toEqual({ created: 1, skipped: 0, errors: [] });
+      expect(initializeClient).toHaveBeenCalledWith(ONLINE_SCORES_DATA_STREAM);
+      expect(dsCreate).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('fetchCandidateBackgroundRounds', () => {
-    it('aggregates recalled_ids, opened_ids, and applied_writes per T_background trace_id', async () => {
+    it('aggregates recalled_ids, hydrated_ids, opened_ids, and applied_writes per T_background trace_id', async () => {
       const search = jest.fn().mockResolvedValue({
         hits: {
           hits: [
@@ -108,6 +128,7 @@ describe('server/judges/online_judge_runner', () => {
                   'nightshift.round_id': 'round-1',
                   'gen_ai.conversation.id': 'conv-1',
                   'nightshift.recalled_ids': JSON.stringify(['memory_a', 'memory_b']),
+                  'nightshift.hydrated_ids': JSON.stringify(['cortex_service_checkout']),
                 },
               },
             },
@@ -143,7 +164,7 @@ describe('server/judges/online_judge_runner', () => {
           foregroundTraceId: 'fg-trace-1',
           roundId: 'round-1',
           conversationId: 'conv-1',
-          recalledIds: ['memory_a', 'memory_b'],
+          recalledIds: ['memory_a', 'memory_b', 'cortex_service_checkout'],
           openedIds: ['memory_a'],
           appliedWrites: [
             {
