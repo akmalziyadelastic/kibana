@@ -267,33 +267,37 @@ export const ingestOnlineScores = async ({
     };
   });
 
-  let responseItems: Array<{
-    create?: { status?: number; error?: { reason?: string; type?: string } };
-  }>;
-
-  if (dataStreams && typeof dataStreams.initializeClient === 'function') {
-    const dsClient = await dataStreams.initializeClient(ONLINE_SCORES_DATA_STREAM);
-    if (dsClient && typeof dsClient.create === 'function') {
-      const dsRes = await dsClient.create({
-        documents: docsWithId,
-        refresh: 'wait_for',
-      });
-      responseItems = dsRes.items ?? [];
-    } else {
-      const operations = docsWithId.flatMap(({ _id, ...payload }) => [
-        { create: { _index: ONLINE_SCORES_DATA_STREAM, _id } },
-        payload,
-      ]);
-      const bulkRes = await esClient.bulk({ refresh: 'wait_for', operations }, { signal });
-      responseItems = bulkRes.items ?? [];
-    }
-  } else {
+  const bulkCreateFallback = async () => {
     const operations = docsWithId.flatMap(({ _id, ...payload }) => [
       { create: { _index: ONLINE_SCORES_DATA_STREAM, _id } },
       payload,
     ]);
     const bulkRes = await esClient.bulk({ refresh: 'wait_for', operations }, { signal });
-    responseItems = bulkRes.items ?? [];
+    return bulkRes.items ?? [];
+  };
+
+  let responseItems: Array<{
+    create?: { status?: number; error?: { reason?: string | null; type?: string | null } };
+  }>;
+
+  if (dataStreams && typeof dataStreams.initializeClient === 'function') {
+    try {
+      const dsClient = await dataStreams.initializeClient(ONLINE_SCORES_DATA_STREAM);
+      if (dsClient && typeof dsClient.create === 'function') {
+        const dsRes = await dsClient.create({
+          documents: docsWithId,
+          refresh: 'wait_for',
+        });
+        responseItems = dsRes.items ?? [];
+      } else {
+        responseItems = await bulkCreateFallback();
+      }
+    } catch {
+      // `.evaluation-online-scores` is not registered when `xpack.evals.enabled` is false; fall back to ES bulk.
+      responseItems = await bulkCreateFallback();
+    }
+  } else {
+    responseItems = await bulkCreateFallback();
   }
 
   let skipped = 0;
