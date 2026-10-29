@@ -11,7 +11,7 @@ import { ToolType } from '@kbn/agent-builder-common';
 import { ToolResultType } from '@kbn/agent-builder-common/tools/tool_result';
 import type { BuiltinToolDefinition } from '@kbn/agent-builder-server';
 import type { Logger } from '@kbn/core/server';
-import type { SandboxPluginStart, SandboxSession } from '@kbn/sandbox-plugin/server';
+import type { RpcOptions, SandboxPluginStart, SandboxSession } from '@kbn/sandbox-plugin/server';
 import type { ResolveConnectorCredentials } from './connector_credentials';
 import { redactSecrets } from './connector_credentials';
 import { getConversationId, getSandboxCallContext } from './tool_utils';
@@ -39,14 +39,15 @@ const TOOL_OUTPUT_DIR = '/workspace/.tool-output';
 const capOutput = async (
   session: SandboxSession,
   stream: 'stdout' | 'stderr',
-  text: string
+  text: string,
+  rpcOptions: RpcOptions
 ): Promise<string> => {
   if (text.length <= MAX_INLINE_OUTPUT_CHARS) return text;
 
   const path = `${TOOL_OUTPUT_DIR}/${randomUUID()}.${stream}.txt`;
   const saved = await session
-    .mkdirs([TOOL_OUTPUT_DIR])
-    .then(() => session.writeFiles([{ path, content: Buffer.from(text, 'utf8') }]))
+    .mkdirs([TOOL_OUTPUT_DIR], rpcOptions)
+    .then(() => session.writeFiles([{ path, content: Buffer.from(text, 'utf8') }], rpcOptions))
     .then(([result]) => result?.success === true)
     .catch(() => false);
   const pointer = saved
@@ -151,10 +152,13 @@ export const createSandboxBashTool = ({
     }
 
     const callContext = getSandboxCallContext(context);
+    const { toolCallId } = context.callContext;
+    const rpcOptions = { correlationId: toolCallId };
 
     await sandboxWorkspaceManager.ensureWorkspaceReady({
       session,
       callContext,
+      correlationId: toolCallId,
     });
 
     // Connector credentials are resolved in Kibana and scoped to this one command's environment.
@@ -193,19 +197,32 @@ export const createSandboxBashTool = ({
         ...credentialEnv,
       };
 
-      const result = await session.runCommand({
-        command,
-        directory: working_directory,
-        env: mergedEnv,
-        timeout_seconds:
-          timeout_seconds && timeout_seconds > 0
-            ? Math.min(timeout_seconds, MAX_SANDBOX_COMMAND_TIMEOUT_SECONDS)
-            : MAX_SANDBOX_COMMAND_TIMEOUT_SECONDS,
-      });
+      const result = await session.runCommand(
+        {
+          command,
+          directory: working_directory,
+          env: mergedEnv,
+          timeout_seconds:
+            timeout_seconds && timeout_seconds > 0
+              ? Math.min(timeout_seconds, MAX_SANDBOX_COMMAND_TIMEOUT_SECONDS)
+              : MAX_SANDBOX_COMMAND_TIMEOUT_SECONDS,
+        },
+        rpcOptions
+      );
 
       const { exit_code, timed_out } = result;
-      const stdout = await capOutput(session, 'stdout', redactSecrets(result.stdout, secretValues));
-      const stderr = await capOutput(session, 'stderr', redactSecrets(result.stderr, secretValues));
+      const stdout = await capOutput(
+        session,
+        'stdout',
+        redactSecrets(result.stdout, secretValues),
+        rpcOptions
+      );
+      const stderr = await capOutput(
+        session,
+        'stderr',
+        redactSecrets(result.stderr, secretValues),
+        rpcOptions
+      );
 
       if (timed_out || exit_code !== 0) {
         const message = [

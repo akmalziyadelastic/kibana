@@ -47,6 +47,7 @@ export async function plugin(initializerContext: PluginInitializerContext) {
 export type { SandboxSession } from './sandbox_session';
 export type { SandboxPluginSetup, SandboxPluginStart } from './plugin';
 export type {
+  RpcOptions,
   RunCommandParams,
   RunCommandResult,
   FileMetadata,

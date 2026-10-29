@@ -179,12 +179,14 @@ const renderIndex = (trees: DecisionTreeSummary[]): string => {
  */
 export const materializeDecisionTrees = async ({
   session,
+  correlationId,
   store,
   logger,
   treeIds,
   signal,
 }: {
   session: SandboxSession;
+  correlationId?: string;
   store: DecisionTreeStore;
   logger: Logger;
   /**
@@ -213,17 +215,21 @@ export const materializeDecisionTrees = async ({
     throw new Error('Decision tree hydrate aborted');
   }
 
-  await session.mkdirs([DECISION_TREE_WORKSPACE_ROOT]);
-  await session.writeFiles([
-    {
-      path: `${DECISION_TREE_WORKSPACE_ROOT}/${MONITORS_INDEX_FILENAME}`,
-      content: Buffer.from(renderIndex(trees), 'utf8'),
-    },
-    ...stored.map((tree) => ({
-      path: workspacePathForTree(tree.tree_id),
-      content: Buffer.from(buildTreeFileContent(tree.markdown, tree.learnings), 'utf8'),
-    })),
-  ]);
+  const rpcOptions = { correlationId };
+  await session.mkdirs([DECISION_TREE_WORKSPACE_ROOT], rpcOptions);
+  await session.writeFiles(
+    [
+      {
+        path: `${DECISION_TREE_WORKSPACE_ROOT}/${MONITORS_INDEX_FILENAME}`,
+        content: Buffer.from(renderIndex(trees), 'utf8'),
+      },
+      ...stored.map((tree) => ({
+        path: workspacePathForTree(tree.tree_id),
+        content: Buffer.from(buildTreeFileContent(tree.markdown, tree.learnings), 'utf8'),
+      })),
+    ],
+    rpcOptions
+  );
 
   logger.info(`Materialized ${stored.length} decision tree(s) into sandbox`);
   return trees;

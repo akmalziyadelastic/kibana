@@ -125,6 +125,7 @@ export const decisionTreeHydrateStepDefinition = ({
           (signal) =>
             hydrateDecisionTreeWorkspace({
               session,
+              correlationId: context.stepExecutionId,
               esClient: context.contextManager.getScopedEsClient(),
               logger,
               spaceId,

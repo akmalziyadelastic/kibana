@@ -6,7 +6,7 @@
  */
 
 import type { Logger } from '@kbn/core/server';
-import type { SandboxSession } from '@kbn/sandbox-plugin/server';
+import type { RpcOptions, SandboxSession } from '@kbn/sandbox-plugin/server';
 import { SANDBOX_BASH_TOOL_ID } from './tool';
 
 /** Where the sandbox gets Elasticsearch credentials: the telemetry connector. */
@@ -117,19 +117,24 @@ export const writeElasticManifest = async ({
   credentials,
   readableIndices,
   logger,
+  rpcOptions,
 }: {
   session: SandboxSession;
   credentials: ElasticCredentials;
   readableIndices?: string;
   logger: Logger;
+  rpcOptions?: RpcOptions;
 }): Promise<void> => {
   logger.debug(`Writing Elasticsearch manifest`);
 
-  const [result] = await session.writeFiles([
-    {
-      path: '/workspace/elastic.md',
-      content: Buffer.from(renderElasticManifest(credentials, { readableIndices }), 'utf8'),
-    },
-  ]);
+  const [result] = await session.writeFiles(
+    [
+      {
+        path: '/workspace/elastic.md',
+        content: Buffer.from(renderElasticManifest(credentials, { readableIndices }), 'utf8'),
+      },
+    ],
+    rpcOptions
+  );
   if (!result?.success) throw new Error('Failed to write sandbox telemetry guidance');
 };

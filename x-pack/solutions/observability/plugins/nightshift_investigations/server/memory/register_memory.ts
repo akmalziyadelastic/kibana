@@ -70,6 +70,7 @@ export const createMemoryStore = ({
 
 export const hydrateMemoryWorkspace = async ({
   session,
+  correlationId,
   esClient,
   spaceId,
   agentId,
@@ -78,6 +79,8 @@ export const hydrateMemoryWorkspace = async ({
   logger,
 }: {
   session: SandboxSession;
+  /** Sent to sandbox-api with every RPC so its logs can be joined with this workflow step. */
+  correlationId?: string;
   esClient: ElasticsearchClient;
   spaceId: string;
   agentId: string;
@@ -89,7 +92,7 @@ export const hydrateMemoryWorkspace = async ({
   logger.debug(
     `Memory hydrate space=${spaceId} agent=${agentId} query=${JSON.stringify(previewText(query))}`
   );
-  return materializeMemory({ session, store, logger, query });
+  return materializeMemory({ session, correlationId, store, logger, query });
 };
 
 export const loadRoundSteps = async ({

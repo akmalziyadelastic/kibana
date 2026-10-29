@@ -54,6 +54,11 @@ const setup = ({
     request,
     runContext: { stack: [{ type: 'agent', agentId: 'agent', conversationId: 'conv-1' }] },
     agentConfiguration: { connector_ids: ['connector-1'] },
+    callContext: {
+      toolId: 'nightshift_sandbox_bash',
+      toolCallId: 'tool-call-1',
+      callSource: 'agent',
+    },
   };
 
   const run = (params: Record<string, unknown>) =>
@@ -70,6 +75,21 @@ describe('sandbox bash tool', () => {
     const { tool } = setup();
 
     expect(tool.excludeFromMcp).toBe(true);
+  });
+
+  it('sends the tool call id as correlation id with every sandbox RPC the call issues', async () => {
+    const { run, runCommand, writeFiles, session } = setup({
+      stdout: 'x'.repeat(MAX_INLINE_OUTPUT_CHARS + 1),
+    });
+    await run({});
+
+    const rpcOptions = { correlationId: 'tool-call-1' };
+    expect(runCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ command: 'echo hi' }),
+      rpcOptions
+    );
+    expect(session.mkdirs).toHaveBeenCalledWith(expect.any(Array), rpcOptions);
+    expect(writeFiles).toHaveBeenCalledWith(expect.any(Array), rpcOptions);
   });
 
   it('logs only the error type, never the error message, when the sandbox call throws', async () => {

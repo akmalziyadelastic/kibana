@@ -79,10 +79,14 @@ export const createSandboxWorkspaceManager = ({
     async ensureWorkspaceReady({
       session,
       callContext,
+      correlationId,
     }: {
       session: SandboxSession;
       callContext: SandboxCallContext;
+      /** Identifies the tool call or workflow step issuing the sandbox RPCs; sent to sandbox-api. */
+      correlationId?: string;
     }): Promise<void> {
+      const rpcOptions = { correlationId };
       const { actions } = getDeps();
       const selected = await prepareCallContext(callContext);
       const selectedConnectorId = selected?.connectorId;
@@ -107,10 +111,10 @@ export const createSandboxWorkspaceManager = ({
         // `isReset` is an edge-triggered signal and another sandbox RPC (for example the
         // before-agent allocation step) may consume it before tools run. Verify the actual
         // workspace invariant before trusting the connector cache.
-        const manifests = await session.statFiles([
-          '/workspace/elastic.md',
-          '/workspace/connectors.md',
-        ]);
+        const manifests = await session.statFiles(
+          ['/workspace/elastic.md', '/workspace/connectors.md'],
+          rpcOptions
+        );
         const workspaceReady =
           manifests.length === 2 &&
           manifests.every(({ exists, is_dir: isDirectory }) => exists && !isDirectory);
@@ -122,12 +126,15 @@ export const createSandboxWorkspaceManager = ({
       if (!canUseTelemetry) {
         lastWorkspaceKeys.delete(session);
         // Clear previously seeded hints on revocation; a failed clear must block file access.
-        const [result] = await session.writeFiles([
-          {
-            path: '/workspace/elastic.md',
-            content: Buffer.from('No telemetry connector is available.\n'),
-          },
-        ]);
+        const [result] = await session.writeFiles(
+          [
+            {
+              path: '/workspace/elastic.md',
+              content: Buffer.from('No telemetry connector is available.\n'),
+            },
+          ],
+          rpcOptions
+        );
         if (!result?.success) throw new Error('Failed to clear sandbox telemetry guidance');
       }
 
@@ -137,6 +144,7 @@ export const createSandboxWorkspaceManager = ({
           callContext,
           getActionsClient,
           logger,
+          rpcOptions,
         });
         if (selectedConnectorId && canUseTelemetry) {
           await writeElasticManifest({
@@ -144,6 +152,7 @@ export const createSandboxWorkspaceManager = ({
             credentials: { kind: 'connector', connectorId: selectedConnectorId },
             readableIndices: selectedReadableIndices,
             logger,
+            rpcOptions,
           });
         }
         lastWorkspaceKeys.set(session, currentKey);

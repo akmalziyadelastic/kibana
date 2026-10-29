@@ -135,6 +135,7 @@ export const memoryMaterializeToSandboxStepDefinition = ({
           async (signal) =>
             hydrateMemoryWorkspace({
               session,
+              correlationId: context.stepExecutionId,
               esClient: context.contextManager.getScopedEsClient(),
               spaceId,
               agentId: trimmedAgentId,

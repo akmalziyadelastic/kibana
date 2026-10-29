@@ -82,11 +82,13 @@ const renderPage = (page: CortexPage): string => {
 
 export const materializeCortex = async ({
   session,
+  correlationId,
   store,
   telemetry,
   logger,
 }: {
   session: SandboxSession;
+  correlationId?: string;
   store: CortexPageStore;
   telemetry: CortexTelemetry;
   logger: Logger;
@@ -100,12 +102,17 @@ export const materializeCortex = async ({
     (page): page is CortexPage => page !== undefined
   );
 
-  await session.mkdirs([
-    CORTEX_WORKSPACE_ROOT,
-    ...CORTEX_ENTITY_TYPES.map(
-      (entityType) => `${CORTEX_WORKSPACE_ROOT}/${CORTEX_ENTITY_TYPE_BUCKETS[entityType]}`
-    ),
-  ]);
+  const rpcOptions = { correlationId };
+
+  await session.mkdirs(
+    [
+      CORTEX_WORKSPACE_ROOT,
+      ...CORTEX_ENTITY_TYPES.map(
+        (entityType) => `${CORTEX_WORKSPACE_ROOT}/${CORTEX_ENTITY_TYPE_BUCKETS[entityType]}`
+      ),
+    ],
+    rpcOptions
+  );
 
   // The sandbox has no rename, so this cannot be an atomic swap. Writing the pages first means a
   // failure part-way leaves the index missing rather than listing pages that were never written —
@@ -114,12 +121,19 @@ export const materializeCortex = async ({
     fullPages.map((page) => ({
       path: pagePath(page.entity_type, page.slug),
       content: Buffer.from(renderPage(page), 'utf8'),
-    }))
+    })),
+    rpcOptions
   );
-  await session.writeFiles([
-    { path: `${CORTEX_WORKSPACE_ROOT}/README.md`, content: Buffer.from(README_CONTENT, 'utf8') },
-    { path: `${CORTEX_WORKSPACE_ROOT}/INDEX.md`, content: Buffer.from(renderIndex(pages), 'utf8') },
-  ]);
+  await session.writeFiles(
+    [
+      { path: `${CORTEX_WORKSPACE_ROOT}/README.md`, content: Buffer.from(README_CONTENT, 'utf8') },
+      {
+        path: `${CORTEX_WORKSPACE_ROOT}/INDEX.md`,
+        content: Buffer.from(renderIndex(pages), 'utf8'),
+      },
+    ],
+    rpcOptions
+  );
 
   telemetry.reportHydrated(fullPages);
   logger.info(

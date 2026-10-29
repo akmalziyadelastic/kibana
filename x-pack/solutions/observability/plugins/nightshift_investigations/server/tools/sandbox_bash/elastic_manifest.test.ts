@@ -66,9 +66,10 @@ describe('writeElasticManifest', () => {
       logger: loggingSystemMock.createLogger(),
     });
 
-    expect(writeFiles).toHaveBeenCalledWith([
-      { path: '/workspace/elastic.md', content: expect.any(Buffer) },
-    ]);
+    expect(writeFiles).toHaveBeenCalledWith(
+      [{ path: '/workspace/elastic.md', content: expect.any(Buffer) }],
+      undefined
+    );
     const [files] = writeFiles.mock.calls[0];
     expect(files[0].content.toString('utf8')).toContain('# Elasticsearch telemetry');
   });

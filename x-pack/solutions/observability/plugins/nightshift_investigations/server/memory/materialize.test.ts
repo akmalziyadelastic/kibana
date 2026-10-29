@@ -124,6 +124,34 @@ describe('materializeMemory', () => {
     expect(pageWrite.every((file: { path: string }) => file.path.endsWith('.md'))).toBe(true);
   });
 
+  it('sends the correlation id with every sandbox RPC', async () => {
+    const store = createStore(candidates);
+    const session = createSession();
+
+    await materializeMemory({
+      session: session as never,
+      correlationId: 'step-execution-1',
+      store,
+      logger: loggerMock.create(),
+      keepCount: 2,
+      sampleBeta: () => 0.5,
+    });
+
+    const rpcOptions = { correlationId: 'step-execution-1' };
+    const rpcCalls = [
+      ...session.statFiles.mock.calls,
+      ...session.readFiles.mock.calls,
+      ...session.mkdirs.mock.calls,
+      ...session.writeFiles.mock.calls,
+    ];
+    expect(session.statFiles).toHaveBeenCalled();
+    expect(session.mkdirs).toHaveBeenCalled();
+    expect(session.writeFiles).toHaveBeenCalled();
+    expect(
+      rpcCalls.every(([, options]) => options?.correlationId === rpcOptions.correlationId)
+    ).toBe(true);
+  });
+
   it('names each page file by its slug and writes only the page content', async () => {
     const store = createStore([
       {

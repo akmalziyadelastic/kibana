@@ -128,13 +128,13 @@ describe('createSandboxWorkspaceManager', () => {
     mockWriteConnectorManifest.mockClear();
 
     // Second call — same session (not reset), same connectors → skip
-    await manager.ensureWorkspaceReady({ session, callContext });
+    await manager.ensureWorkspaceReady({ session, callContext, correlationId: 'correlation-1' });
 
     expect(mockWriteConnectorManifest).not.toHaveBeenCalled();
-    expect(session.statFiles).toHaveBeenCalledWith([
-      '/workspace/elastic.md',
-      '/workspace/connectors.md',
-    ]);
+    expect(session.statFiles).toHaveBeenCalledWith(
+      ['/workspace/elastic.md', '/workspace/connectors.md'],
+      { correlationId: 'correlation-1' }
+    );
   });
 
   it('recreates manifests when reset was consumed but required files are missing', async () => {
@@ -300,12 +300,15 @@ describe('createSandboxWorkspaceManager', () => {
         })
       );
       expect(mockWriteElasticManifest).toHaveBeenCalledTimes(2);
-      expect(noneSession.writeFiles).toHaveBeenCalledWith([
-        {
-          path: '/workspace/elastic.md',
-          content: Buffer.from('No telemetry connector is available.\n'),
-        },
-      ]);
+      expect(noneSession.writeFiles).toHaveBeenCalledWith(
+        [
+          {
+            path: '/workspace/elastic.md',
+            content: Buffer.from('No telemetry connector is available.\n'),
+          },
+        ],
+        expect.any(Object)
+      );
     });
 
     it('preserves a custom agent multi-connector allow-list without inferring one telemetry source', async () => {
@@ -520,12 +523,15 @@ describe('createSandboxWorkspaceManager', () => {
       await manager.ensureWorkspaceReady({ session, callContext });
 
       expect(mockWriteElasticManifest).not.toHaveBeenCalled();
-      expect(session.writeFiles).toHaveBeenCalledWith([
-        {
-          path: '/workspace/elastic.md',
-          content: Buffer.from('No telemetry connector is available.\n'),
-        },
-      ]);
+      expect(session.writeFiles).toHaveBeenCalledWith(
+        [
+          {
+            path: '/workspace/elastic.md',
+            content: Buffer.from('No telemetry connector is available.\n'),
+          },
+        ],
+        expect.any(Object)
+      );
     });
 
     it('swallows elastic manifest write failures (best-effort)', async () => {
@@ -565,12 +571,15 @@ describe('createSandboxWorkspaceManager', () => {
         callContext: createCallContext(['other']),
       });
       expect(mockWriteElasticManifest).not.toHaveBeenCalled();
-      expect(session.writeFiles).toHaveBeenCalledWith([
-        {
-          path: '/workspace/elastic.md',
-          content: Buffer.from('No telemetry connector is available.\n'),
-        },
-      ]);
+      expect(session.writeFiles).toHaveBeenCalledWith(
+        [
+          {
+            path: '/workspace/elastic.md',
+            content: Buffer.from('No telemetry connector is available.\n'),
+          },
+        ],
+        expect.any(Object)
+      );
     });
 
     it('clears previously seeded hints when the agent allow-list changes', async () => {
@@ -585,12 +594,15 @@ describe('createSandboxWorkspaceManager', () => {
         callContext: createCallContext([]),
       });
       expect(mockWriteElasticManifest).not.toHaveBeenCalled();
-      expect(session.writeFiles).toHaveBeenCalledWith([
-        {
-          path: '/workspace/elastic.md',
-          content: Buffer.from('No telemetry connector is available.\n'),
-        },
-      ]);
+      expect(session.writeFiles).toHaveBeenCalledWith(
+        [
+          {
+            path: '/workspace/elastic.md',
+            content: Buffer.from('No telemetry connector is available.\n'),
+          },
+        ],
+        expect.any(Object)
+      );
     });
 
     it('rechecks user access even when the agent allow-list is unchanged', async () => {

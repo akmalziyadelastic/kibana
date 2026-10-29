@@ -59,17 +59,22 @@ describe('materializeDecisionTrees', () => {
 
     const materialized = await materializeDecisionTrees({
       session: session as never,
+      correlationId: 'step-execution-1',
       store: createStore([TREE]),
       logger: loggerMock.create(),
     });
 
-    expect(session.mkdirs).toHaveBeenCalledWith(['/workspace/decision-trees']);
-    expect(session.writeFiles).toHaveBeenCalledWith([
-      expect.objectContaining({ path: '/workspace/decision-trees/monitors.md' }),
-      expect.objectContaining({
-        path: '/workspace/decision-trees/decision_tree_checkout-high-latency.md',
-      }),
-    ]);
+    const rpcOptions = { correlationId: 'step-execution-1' };
+    expect(session.mkdirs).toHaveBeenCalledWith(['/workspace/decision-trees'], rpcOptions);
+    expect(session.writeFiles).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ path: '/workspace/decision-trees/monitors.md' }),
+        expect.objectContaining({
+          path: '/workspace/decision-trees/decision_tree_checkout-high-latency.md',
+        }),
+      ],
+      rpcOptions
+    );
 
     const written = session.writeFiles.mock.calls[0][0][1].content.toString('utf8');
     expect(written).toBe(TREE.markdown);

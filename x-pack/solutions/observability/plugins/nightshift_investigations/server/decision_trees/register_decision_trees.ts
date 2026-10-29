@@ -54,6 +54,7 @@ export const registerDecisionTreeAiIndex = (
 /** Writes the stored decision trees into the reinforcement agent's sandbox for this round. */
 export const hydrateDecisionTreeWorkspace = async ({
   session,
+  correlationId,
   esClient,
   logger,
   spaceId,
@@ -61,6 +62,8 @@ export const hydrateDecisionTreeWorkspace = async ({
   signal,
 }: {
   session: SandboxSession;
+  /** Sent to sandbox-api with every RPC so its logs can be joined with this workflow step. */
+  correlationId?: string;
   esClient: ElasticsearchClient;
   logger: Logger;
   spaceId: string;
@@ -71,6 +74,7 @@ export const hydrateDecisionTreeWorkspace = async ({
   const accessedTreeIds = parseAccessedTreesMarker(prompt);
   const trees = await materializeDecisionTrees({
     session,
+    correlationId,
     store,
     logger,
     signal,

@@ -194,6 +194,7 @@ export const createSubmitOptimizerResultTool = ({
           await persistSubmission({
             submission,
             session,
+            correlationId: context.callContext.toolCallId,
             store,
             author,
             summary: params.summary,
@@ -265,6 +266,7 @@ export const createSubmitOptimizerResultTool = ({
 const persistSubmission = async ({
   submission,
   session,
+  correlationId,
   store,
   author,
   summary,
@@ -272,6 +274,7 @@ const persistSubmission = async ({
 }: {
   submission: z.infer<typeof submissionSchema>;
   session: SandboxSession;
+  correlationId: string;
   store: DecisionTreeStore;
   author: string;
   summary: string;
@@ -303,9 +306,10 @@ const persistSubmission = async ({
     );
   }
 
-  const [readResult] = await session.readFiles([
-    { path: resolvedPath, maxReadBytes: MAX_TREE_FILE_BYTES },
-  ]);
+  const [readResult] = await session.readFiles(
+    [{ path: resolvedPath, maxReadBytes: MAX_TREE_FILE_BYTES }],
+    { correlationId }
+  );
   if (!readResult?.success) {
     throw new DecisionTreeValidationError(treeId, `Could not read submitted file ${filePath}`);
   }

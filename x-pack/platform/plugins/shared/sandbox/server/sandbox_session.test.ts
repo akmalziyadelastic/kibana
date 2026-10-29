@@ -76,6 +76,32 @@ describe('SandboxSessionImpl', () => {
 
   const run = () => session.runCommand({ command: 'true' });
 
+  it('forwards the correlation id to the API client for every RPC type', async () => {
+    const options = { correlationId: 'correlation-1' };
+    const readFiles = jest.spyOn(apiClient, 'readFiles').mockResolvedValue([]);
+    const writeFiles = jest.spyOn(apiClient, 'writeFiles').mockResolvedValue([]);
+    const mkdirs = jest.spyOn(apiClient, 'mkdirs').mockResolvedValue([]);
+    const statFiles = jest.spyOn(apiClient, 'statFiles').mockResolvedValue([]);
+    runCommand.mockResolvedValue(okResult);
+
+    await session.runCommand({ command: 'true' }, options);
+    await session.readFiles([{ path: '/a' }], options);
+    await session.writeFiles([{ path: '/a', content: Buffer.from('') }], options);
+    await session.mkdirs(['/a'], options);
+    await session.statFiles(['/a'], options);
+
+    const conversationId = 'space:conv-1';
+    expect(runCommand).toHaveBeenCalledWith(conversationId, { command: 'true' }, options);
+    expect(readFiles).toHaveBeenCalledWith(conversationId, [{ path: '/a' }], options);
+    expect(writeFiles).toHaveBeenCalledWith(
+      conversationId,
+      [{ path: '/a', content: Buffer.from('') }],
+      options
+    );
+    expect(mkdirs).toHaveBeenCalledWith(conversationId, ['/a'], options);
+    expect(statFiles).toHaveBeenCalledWith(conversationId, ['/a'], options);
+  });
+
   it('starts with isReset=true', () => {
     expect(session.isReset).toBe(true);
   });

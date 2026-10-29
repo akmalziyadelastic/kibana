@@ -79,6 +79,7 @@ const isSandboxUnavailable = (err: unknown): err is Error & { code: number } =>
 
 export const hydrateCortexWorkspace = async ({
   session,
+  correlationId,
   esClient,
   spaceId,
   signal,
@@ -87,6 +88,8 @@ export const hydrateCortexWorkspace = async ({
   logger,
 }: {
   session: SandboxSession;
+  /** Sent to sandbox-api with every RPC so its logs can be joined with this workflow step. */
+  correlationId?: string;
   esClient: ElasticsearchClient;
   spaceId: string;
   signal?: AbortSignal;
@@ -96,7 +99,7 @@ export const hydrateCortexWorkspace = async ({
 }): Promise<void> => {
   const store = createCortexStore({ esClient, logger, spaceId, signal });
   const telemetry = createCortexTelemetry({ analytics, conversationId, logger });
-  const materialize = () => materializeCortex({ session, store, telemetry, logger });
+  const materialize = () => materializeCortex({ session, correlationId, store, telemetry, logger });
 
   try {
     await materialize();

@@ -92,16 +92,20 @@ export const createSandboxStrReplaceTool = ({
       };
     }
 
+    const { toolCallId } = context.callContext;
+    const rpcOptions = { correlationId: toolCallId };
+
     await sandboxWorkspaceManager.ensureWorkspaceReady({
       session,
       callContext: getSandboxCallContext(context),
+      correlationId: toolCallId,
     });
 
     const resolvedPath = resolveAbsolutePath(params.file_path);
     logger.debug(`sandbox_str_replace: ${resolvedPath}`);
 
     try {
-      const [stat] = await session.statFiles([resolvedPath]);
+      const [stat] = await session.statFiles([resolvedPath], rpcOptions);
       if (!stat.exists || stat.is_dir) {
         return {
           results: [
@@ -127,9 +131,10 @@ export const createSandboxStrReplaceTool = ({
         };
       }
 
-      const [readResult] = await session.readFiles([
-        { path: resolvedPath, maxReadBytes: MAX_FILE_SIZE_BYTES },
-      ]);
+      const [readResult] = await session.readFiles(
+        [{ path: resolvedPath, maxReadBytes: MAX_FILE_SIZE_BYTES }],
+        rpcOptions
+      );
       if (!readResult.success) {
         return {
           results: [
@@ -217,9 +222,10 @@ export const createSandboxStrReplaceTool = ({
       const before = original.slice(0, idx);
       const startLine = before.split('\n').length;
 
-      const writeResult = await session.writeFiles([
-        { path: resolvedPath, content: Buffer.from(updated, 'utf8') },
-      ]);
+      const writeResult = await session.writeFiles(
+        [{ path: resolvedPath, content: Buffer.from(updated, 'utf8') }],
+        rpcOptions
+      );
       if (!writeResult[0]?.success) {
         return {
           results: [

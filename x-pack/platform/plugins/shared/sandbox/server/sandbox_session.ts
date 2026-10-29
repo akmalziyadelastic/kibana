@@ -8,6 +8,7 @@
 import type { Logger } from '@kbn/core/server';
 import type {
   SandboxApiClient,
+  RpcOptions,
   RunCommandParams,
   RunCommandResult,
   FileMetadata,
@@ -56,20 +57,32 @@ export interface SandboxSession {
    */
   readonly isReset: boolean;
 
-  /** Runs a shell command inside the sandbox pod and streams stdout/stderr. */
-  runCommand(params: RunCommandParams): Promise<RunCommandResult>;
+  /**
+   * Runs a shell command inside the sandbox pod and streams stdout/stderr.
+   *
+   * Every method accepts optional {@link RpcOptions}. `correlationId` is sent to sandbox-api as
+   * `x-correlation-id` so its logs can be joined with the Kibana tool call or workflow step that
+   * issued the RPC.
+   */
+  runCommand(params: RunCommandParams, options?: RpcOptions): Promise<RunCommandResult>;
 
   /** Reads one or more files from the sandbox pod's filesystem. */
-  readFiles(requests: Array<{ path: string; maxReadBytes?: number }>): Promise<ReadFileResult[]>;
+  readFiles(
+    requests: Array<{ path: string; maxReadBytes?: number }>,
+    options?: RpcOptions
+  ): Promise<ReadFileResult[]>;
 
   /** Writes one or more files to the sandbox pod's filesystem. */
-  writeFiles(files: Array<{ path: string; content: Buffer }>): Promise<WriteFileResult[]>;
+  writeFiles(
+    files: Array<{ path: string; content: Buffer }>,
+    options?: RpcOptions
+  ): Promise<WriteFileResult[]>;
 
   /** Creates directories (including parents) inside the sandbox pod. */
-  mkdirs(paths: string[]): Promise<boolean[]>;
+  mkdirs(paths: string[], options?: RpcOptions): Promise<boolean[]>;
 
   /** Returns metadata (existence, size, type) for paths inside the sandbox pod. */
-  statFiles(paths: string[]): Promise<FileMetadata[]>;
+  statFiles(paths: string[], options?: RpcOptions): Promise<FileMetadata[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,26 +110,30 @@ export class SandboxSessionImpl implements SandboxSession {
     return this._isReset;
   }
 
-  async runCommand(params: RunCommandParams): Promise<RunCommandResult> {
-    return this.execute(() => this.apiClient.runCommand(this.sessionId, params));
+  async runCommand(params: RunCommandParams, options?: RpcOptions): Promise<RunCommandResult> {
+    return this.execute(() => this.apiClient.runCommand(this.sessionId, params, options));
   }
 
   async readFiles(
-    requests: Array<{ path: string; maxReadBytes?: number }>
+    requests: Array<{ path: string; maxReadBytes?: number }>,
+    options?: RpcOptions
   ): Promise<ReadFileResult[]> {
-    return this.execute(() => this.apiClient.readFiles(this.sessionId, requests));
+    return this.execute(() => this.apiClient.readFiles(this.sessionId, requests, options));
   }
 
-  async writeFiles(files: Array<{ path: string; content: Buffer }>): Promise<WriteFileResult[]> {
-    return this.execute(() => this.apiClient.writeFiles(this.sessionId, files));
+  async writeFiles(
+    files: Array<{ path: string; content: Buffer }>,
+    options?: RpcOptions
+  ): Promise<WriteFileResult[]> {
+    return this.execute(() => this.apiClient.writeFiles(this.sessionId, files, options));
   }
 
-  async mkdirs(paths: string[]): Promise<boolean[]> {
-    return this.execute(() => this.apiClient.mkdirs(this.sessionId, paths));
+  async mkdirs(paths: string[], options?: RpcOptions): Promise<boolean[]> {
+    return this.execute(() => this.apiClient.mkdirs(this.sessionId, paths, options));
   }
 
-  async statFiles(paths: string[]): Promise<FileMetadata[]> {
-    return this.execute(() => this.apiClient.statFiles(this.sessionId, paths));
+  async statFiles(paths: string[], options?: RpcOptions): Promise<FileMetadata[]> {
+    return this.execute(() => this.apiClient.statFiles(this.sessionId, paths, options));
   }
 
   private async execute<T>(fn: () => Promise<T>): Promise<T> {

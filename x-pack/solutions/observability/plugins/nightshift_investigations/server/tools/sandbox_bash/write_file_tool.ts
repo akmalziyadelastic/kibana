@@ -84,9 +84,13 @@ export const createSandboxWriteFileTool = ({
       };
     }
 
+    const { toolCallId } = context.callContext;
+    const rpcOptions = { correlationId: toolCallId };
+
     await sandboxWorkspaceManager.ensureWorkspaceReady({
       session,
       callContext: getSandboxCallContext(context),
+      correlationId: toolCallId,
     });
 
     const resolvedPath = resolveAbsolutePath(params.file_path);
@@ -95,11 +99,14 @@ export const createSandboxWriteFileTool = ({
     try {
       const parentDir = path.posix.dirname(resolvedPath);
       if (parentDir && parentDir !== '.' && parentDir !== '/') {
-        await session.mkdirs([parentDir]);
+        await session.mkdirs([parentDir], rpcOptions);
       }
 
       const contentBuf = Buffer.from(params.content, 'utf8');
-      const writeResult = await session.writeFiles([{ path: resolvedPath, content: contentBuf }]);
+      const writeResult = await session.writeFiles(
+        [{ path: resolvedPath, content: contentBuf }],
+        rpcOptions
+      );
 
       if (!writeResult[0]?.success) {
         return {

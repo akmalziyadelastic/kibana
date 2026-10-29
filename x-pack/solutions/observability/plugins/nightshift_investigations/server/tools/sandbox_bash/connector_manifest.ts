@@ -6,7 +6,7 @@
  */
 
 import type { KibanaRequest, Logger } from '@kbn/core/server';
-import type { SandboxSession } from '@kbn/sandbox-plugin/server';
+import type { RpcOptions, SandboxSession } from '@kbn/sandbox-plugin/server';
 import type { AgentConnector, ActionsClient } from './agent_connectors';
 import { listAgentConnectors } from './agent_connectors';
 import type { SandboxCallContext } from './tool_utils';
@@ -19,11 +19,13 @@ export const writeConnectorManifest = async ({
   callContext,
   getActionsClient,
   logger,
+  rpcOptions,
 }: {
   session: SandboxSession;
   callContext: SandboxCallContext;
   getActionsClient: ((req: KibanaRequest) => Promise<ActionsClient>) | undefined;
   logger: Logger;
+  rpcOptions?: RpcOptions;
 }): Promise<void> => {
   const connectors = await listAgentConnectors(callContext, getActionsClient);
 
@@ -61,7 +63,8 @@ export const writeConnectorManifest = async ({
 
   logger.debug(`Writing connector manifest (${connectors.length} connector(s))`);
 
-  await session.writeFiles([
-    { path: '/workspace/connectors.md', content: Buffer.from(content, 'utf8') },
-  ]);
+  await session.writeFiles(
+    [{ path: '/workspace/connectors.md', content: Buffer.from(content, 'utf8') }],
+    rpcOptions
+  );
 };

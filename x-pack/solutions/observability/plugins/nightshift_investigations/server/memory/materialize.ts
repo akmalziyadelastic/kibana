@@ -6,7 +6,7 @@
  */
 
 import type { Logger } from '@kbn/core/server';
-import type { SandboxSession } from '@kbn/sandbox-plugin/server';
+import type { RpcOptions, SandboxSession } from '@kbn/sandbox-plugin/server';
 import { formatHydrateNotification } from '../lib/hydrate_notification';
 import { SANDBOX_VIEW_FILE_TOOL_ID } from '../tools/sandbox_bash/view_file_tool';
 import { formatPageRefs, previewText } from './log_format';
@@ -111,8 +111,11 @@ export const parseMemoryCatalog = (raw: string): MemoryCatalogEntry[] => {
   }
 };
 
-const readMemoryCatalog = async (session: SandboxSession): Promise<MemoryCatalogEntry[]> => {
-  const [metadata] = await session.statFiles([MEMORY_INDEX_PATH]);
+const readMemoryCatalog = async (
+  session: SandboxSession,
+  rpcOptions: RpcOptions
+): Promise<MemoryCatalogEntry[]> => {
+  const [metadata] = await session.statFiles([MEMORY_INDEX_PATH], rpcOptions);
   if (!metadata?.exists) {
     return [];
   }
@@ -120,9 +123,10 @@ const readMemoryCatalog = async (session: SandboxSession): Promise<MemoryCatalog
     throw new Error('Memory catalog path is a directory');
   }
 
-  const [result] = await session.readFiles([
-    { path: MEMORY_INDEX_PATH, maxReadBytes: MEMORY_INDEX_MAX_BYTES },
-  ]);
+  const [result] = await session.readFiles(
+    [{ path: MEMORY_INDEX_PATH, maxReadBytes: MEMORY_INDEX_MAX_BYTES }],
+    rpcOptions
+  );
   if (!result?.success) {
     throw new Error('Memory catalog exists but could not be read');
   }
@@ -152,12 +156,13 @@ const readMemoryCatalog = async (session: SandboxSession): Promise<MemoryCatalog
 
 const existingFilePaths = async (
   session: SandboxSession,
-  paths: string[]
+  paths: string[],
+  rpcOptions: RpcOptions
 ): Promise<Set<string>> => {
   if (paths.length === 0) {
     return new Set();
   }
-  const stats = await session.statFiles(paths);
+  const stats = await session.statFiles(paths, rpcOptions);
   return new Set(stats.filter((stat) => stat.exists && !stat.is_dir).map((stat) => stat.path));
 };
 
@@ -183,6 +188,7 @@ const assertWriteResults = (
 
 export const materializeMemory = async ({
   session,
+  correlationId,
   store,
   logger,
   query,
@@ -191,6 +197,7 @@ export const materializeMemory = async ({
   keepCount = MEMORY_KEEP_COUNT,
 }: {
   session: SandboxSession;
+  correlationId?: string;
   store: MemoryPageStore;
   logger: Logger;
   query?: string;
@@ -271,10 +278,13 @@ export const materializeMemory = async ({
     `Memory materialize keep ${recalledIds.length}/${candidates.length}: ${formatPageRefs(pages)}`
   );
 
+  const rpcOptions = { correlationId };
   const podReset = session.isReset;
-  const priorCatalog = podReset ? [] : await readMemoryCatalog(session);
+  const priorCatalog = podReset ? [] : await readMemoryCatalog(session, rpcOptions);
   const keepPaths = pages.map(pagePath);
-  const alreadyOnDisk = podReset ? new Set<string>() : await existingFilePaths(session, keepPaths);
+  const alreadyOnDisk = podReset
+    ? new Set<string>()
+    : await existingFilePaths(session, keepPaths, rpcOptions);
 
   const carried: MemoryCatalogEntry[] = [];
   const carriedPaths = new Set<string>();
@@ -312,14 +322,15 @@ export const materializeMemory = async ({
     }))
   );
 
-  const mkdirResults = await session.mkdirs([MEMORY_WORKSPACE_ROOT]);
+  const mkdirResults = await session.mkdirs([MEMORY_WORKSPACE_ROOT], rpcOptions);
   assertMkdirResults(mkdirResults, 1);
 
   const pageWriteResults = await session.writeFiles(
     pages.map((page) => ({
       path: pagePath(page),
       content: Buffer.from(renderPage(page), 'utf8'),
-    }))
+    })),
+    rpcOptions
   );
   assertWriteResults(pageWriteResults, pages.length, 'memory page files');
 
@@ -330,7 +341,7 @@ export const materializeMemory = async ({
       content: Buffer.from(JSON.stringify({ entries }), 'utf8'),
     },
   ];
-  const catalogWriteResults = await session.writeFiles(catalogFiles);
+  const catalogWriteResults = await session.writeFiles(catalogFiles, rpcOptions);
   assertWriteResults(catalogWriteResults, catalogFiles.length, 'memory catalog files');
   logger.debug(
     `Memory materialize wrote ${pages.length} page file(s) plus README.md and .index.json (${entries.length} catalog); notification pages=${newPages.length}`

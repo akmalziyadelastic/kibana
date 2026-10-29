@@ -109,6 +109,14 @@ function collectNestedBuffers(buf: Buffer, fieldNumber: number): Buffer[] {
   return results;
 }
 
+/**
+ * Per-RPC options. `correlationId` identifies the Kibana-side unit of work that issued the call
+ * (e.g. a tool call or a workflow step execution) so sandbox-api logs can be joined with Kibana's.
+ */
+export interface RpcOptions {
+  correlationId?: string;
+}
+
 export interface RunCommandParams {
   command: string;
   directory?: string;
@@ -377,7 +385,8 @@ function deserializeMkdirsResponse(buf: Buffer): boolean[] {
 
 // ---------------------------------------------------------------------------
 // SandboxApiClient — one shared gRPC connection to sandbox-api.
-// Each method takes a conversationId injected as x-conversation-id metadata.
+// Each method takes a conversationId injected as x-conversation-id metadata, and
+// optionally a correlationId injected as x-correlation-id metadata.
 // ---------------------------------------------------------------------------
 
 const sandboxServiceDef: grpc.ServiceDefinition<any> = {
@@ -477,10 +486,11 @@ export class SandboxApiClient {
     this.apiKey = apiKey;
   }
 
-  private metadata(conversationId: string): grpc.Metadata {
+  private metadata(conversationId: string, { correlationId }: RpcOptions = {}): grpc.Metadata {
     const md = new grpc.Metadata();
     md.set('authorization', `ApiKey ${this.apiKey}`);
     md.set('x-conversation-id', conversationId);
+    if (correlationId) md.set('x-correlation-id', correlationId);
     return md;
   }
 
@@ -488,7 +498,11 @@ export class SandboxApiClient {
     return { deadline: Date.now() + deadlineMs };
   }
 
-  async runCommand(conversationId: string, params: RunCommandParams): Promise<RunCommandResult> {
+  async runCommand(
+    conversationId: string,
+    params: RunCommandParams,
+    options?: RpcOptions
+  ): Promise<RunCommandResult> {
     const call = promisify(
       (this.client as any).runCommand.bind(this.client) as (
         request: RunCommandRequestProto,
@@ -509,12 +523,16 @@ export class SandboxApiClient {
         timeout_seconds: params.timeout_seconds ?? 0,
         task_group_id: '',
       },
-      this.metadata(conversationId),
+      this.metadata(conversationId, options),
       this.callOptions(timeoutSeconds * 1_000 + COMMAND_DEADLINE_MARGIN_MS)
     );
   }
 
-  async statFiles(conversationId: string, paths: string[]): Promise<FileMetadata[]> {
+  async statFiles(
+    conversationId: string,
+    paths: string[],
+    options?: RpcOptions
+  ): Promise<FileMetadata[]> {
     const call = promisify(
       (this.client as any).statFiles.bind(this.client) as (
         request: string[],
@@ -523,12 +541,17 @@ export class SandboxApiClient {
         callback: (err: grpc.ServiceError | null, response: FileMetadata[]) => void
       ) => void
     );
-    return call(paths, this.metadata(conversationId), this.callOptions(FILE_RPC_DEADLINE_MS));
+    return call(
+      paths,
+      this.metadata(conversationId, options),
+      this.callOptions(FILE_RPC_DEADLINE_MS)
+    );
   }
 
   async readFiles(
     conversationId: string,
-    requests: Array<{ path: string; maxReadBytes?: number }>
+    requests: Array<{ path: string; maxReadBytes?: number }>,
+    options?: RpcOptions
   ): Promise<ReadFileResult[]> {
     const call = promisify(
       (this.client as any).readFiles.bind(this.client) as (
@@ -538,12 +561,17 @@ export class SandboxApiClient {
         callback: (err: grpc.ServiceError | null, response: ReadFileResult[]) => void
       ) => void
     );
-    return call(requests, this.metadata(conversationId), this.callOptions(FILE_RPC_DEADLINE_MS));
+    return call(
+      requests,
+      this.metadata(conversationId, options),
+      this.callOptions(FILE_RPC_DEADLINE_MS)
+    );
   }
 
   async writeFiles(
     conversationId: string,
-    requests: Array<{ path: string; content: Buffer }>
+    requests: Array<{ path: string; content: Buffer }>,
+    options?: RpcOptions
   ): Promise<WriteFileResult[]> {
     const call = promisify(
       (this.client as any).writeFiles.bind(this.client) as (
@@ -553,10 +581,14 @@ export class SandboxApiClient {
         callback: (err: grpc.ServiceError | null, response: WriteFileResult[]) => void
       ) => void
     );
-    return call(requests, this.metadata(conversationId), this.callOptions(FILE_RPC_DEADLINE_MS));
+    return call(
+      requests,
+      this.metadata(conversationId, options),
+      this.callOptions(FILE_RPC_DEADLINE_MS)
+    );
   }
 
-  async mkdirs(conversationId: string, paths: string[]): Promise<boolean[]> {
+  async mkdirs(conversationId: string, paths: string[], options?: RpcOptions): Promise<boolean[]> {
     const call = promisify(
       (this.client as any).mkdirs.bind(this.client) as (
         request: string[],
@@ -565,7 +597,11 @@ export class SandboxApiClient {
         callback: (err: grpc.ServiceError | null, response: boolean[]) => void
       ) => void
     );
-    return call(paths, this.metadata(conversationId), this.callOptions(FILE_RPC_DEADLINE_MS));
+    return call(
+      paths,
+      this.metadata(conversationId, options),
+      this.callOptions(FILE_RPC_DEADLINE_MS)
+    );
   }
 
   close(): void {

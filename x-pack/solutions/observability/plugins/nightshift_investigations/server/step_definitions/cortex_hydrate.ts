@@ -118,6 +118,7 @@ export const cortexHydrateStepDefinition = ({
           (signal) =>
             hydrateCortexWorkspace({
               session,
+              correlationId: context.stepExecutionId,
               esClient: context.contextManager.getScopedEsClient(),
               spaceId,
               signal,

@@ -90,7 +90,8 @@ export const obtainSandboxStepDefinition = ({
         // Stat is enough: the session allocates on the first RPC, including workspace restore.
         const allocate = () =>
           withTimeout(
-            (_signal) => session.statFiles(['/workspace']),
+            (_signal) =>
+              session.statFiles(['/workspace'], { correlationId: context.stepExecutionId }),
             ALLOCATE_TIMEOUT_MS,
             `Sandbox allocate timed out after ${ALLOCATE_TIMEOUT_MS}ms`
           );

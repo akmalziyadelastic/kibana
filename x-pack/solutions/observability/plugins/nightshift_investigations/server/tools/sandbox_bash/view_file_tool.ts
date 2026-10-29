@@ -93,9 +93,13 @@ export const createSandboxViewFileTool = ({
       };
     }
 
+    const { toolCallId } = context.callContext;
+    const rpcOptions = { correlationId: toolCallId };
+
     await sandboxWorkspaceManager.ensureWorkspaceReady({
       session,
       callContext: getSandboxCallContext(context),
+      correlationId: toolCallId,
     });
 
     const resolvedPath = resolveAbsolutePath(params.file_path);
@@ -106,7 +110,7 @@ export const createSandboxViewFileTool = ({
     );
 
     try {
-      const [stat] = await session.statFiles([resolvedPath]);
+      const [stat] = await session.statFiles([resolvedPath], rpcOptions);
       if (!stat.exists || stat.is_dir) {
         return {
           results: [
@@ -132,9 +136,10 @@ export const createSandboxViewFileTool = ({
         };
       }
 
-      const [readResult] = await session.readFiles([
-        { path: resolvedPath, maxReadBytes: MAX_FILE_SIZE_BYTES },
-      ]);
+      const [readResult] = await session.readFiles(
+        [{ path: resolvedPath, maxReadBytes: MAX_FILE_SIZE_BYTES }],
+        rpcOptions
+      );
       if (!readResult.success) {
         return {
           results: [

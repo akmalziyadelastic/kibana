@@ -70,6 +70,11 @@ const createContext = () => ({
   runContext: { stack: [{ type: 'agent', conversationId: 'conv-1' }] },
   esClient: { asCurrentUser: {} },
   agentConfiguration: { connector_ids: [] },
+  callContext: {
+    toolId: 'nightshift_submit_optimizer_result',
+    toolCallId: 'tool-call-1',
+    callSource: 'agent',
+  },
 });
 
 const runSubmit = async ({
@@ -120,9 +125,10 @@ describe('nightshift_submit_optimizer_result', () => {
       markdown: markdownFor(FULL_TREE),
     });
 
-    expect(session.readFiles).toHaveBeenCalledWith([
-      expect.objectContaining({ path: ABSOLUTE_PATH }),
-    ]);
+    expect(session.readFiles).toHaveBeenCalledWith(
+      [expect.objectContaining({ path: ABSOLUTE_PATH })],
+      { correlationId: 'tool-call-1' }
+    );
     expect(store.commit).toHaveBeenCalledWith(
       expect.objectContaining({
         treeId: TREE_ID,

@@ -55,11 +55,19 @@ describe('materializeCortex', () => {
     } as unknown as SandboxSession;
 
     const telemetry = createTelemetry();
-    await materializeCortex({ session, store, telemetry, logger: loggerMock.create() });
+    await materializeCortex({
+      session,
+      correlationId: 'step-execution-1',
+      store,
+      telemetry,
+      logger: loggerMock.create(),
+    });
 
+    const rpcOptions = { correlationId: 'step-execution-1' };
     expect(store.pruneDuplicates).toHaveBeenCalled();
     expect(session.mkdirs).toHaveBeenCalledWith(
-      expect.arrayContaining(['/workspace/cortex', '/workspace/cortex/services'])
+      expect.arrayContaining(['/workspace/cortex', '/workspace/cortex/services']),
+      rpcOptions
     );
     // Pages are written before the index, so a partial failure cannot leave an INDEX.md
     // advertising pages that were never written.
@@ -67,14 +75,16 @@ describe('materializeCortex', () => {
       1,
       expect.arrayContaining([
         expect.objectContaining({ path: '/workspace/cortex/services/checkout.md' }),
-      ])
+      ]),
+      rpcOptions
     );
     expect(session.writeFiles).toHaveBeenNthCalledWith(
       2,
       expect.arrayContaining([
         expect.objectContaining({ path: '/workspace/cortex/README.md' }),
         expect.objectContaining({ path: '/workspace/cortex/INDEX.md' }),
-      ])
+      ]),
+      rpcOptions
     );
   });
 
