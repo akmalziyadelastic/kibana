@@ -85,6 +85,10 @@ export interface SandboxSession {
   statFiles(paths: string[], options?: RpcOptions): Promise<FileMetadata[]>;
 }
 
+const RPC_SERVICE = 'sandbox.SandboxService';
+const GRPC_OK = 0;
+const GRPC_UNKNOWN = 2;
+
 // ---------------------------------------------------------------------------
 // SandboxSessionImpl — per-session wrapper over SandboxApiClient.
 //
@@ -111,33 +115,49 @@ export class SandboxSessionImpl implements SandboxSession {
   }
 
   async runCommand(params: RunCommandParams, options?: RpcOptions): Promise<RunCommandResult> {
-    return this.execute(() => this.apiClient.runCommand(this.sessionId, params, options));
+    return this.execute('RunCommand', options, () =>
+      this.apiClient.runCommand(this.sessionId, params, options)
+    );
   }
 
   async readFiles(
     requests: Array<{ path: string; maxReadBytes?: number }>,
     options?: RpcOptions
   ): Promise<ReadFileResult[]> {
-    return this.execute(() => this.apiClient.readFiles(this.sessionId, requests, options));
+    return this.execute('ReadFiles', options, () =>
+      this.apiClient.readFiles(this.sessionId, requests, options)
+    );
   }
 
   async writeFiles(
     files: Array<{ path: string; content: Buffer }>,
     options?: RpcOptions
   ): Promise<WriteFileResult[]> {
-    return this.execute(() => this.apiClient.writeFiles(this.sessionId, files, options));
+    return this.execute('WriteFiles', options, () =>
+      this.apiClient.writeFiles(this.sessionId, files, options)
+    );
   }
 
   async mkdirs(paths: string[], options?: RpcOptions): Promise<boolean[]> {
-    return this.execute(() => this.apiClient.mkdirs(this.sessionId, paths, options));
+    return this.execute('Mkdirs', options, () =>
+      this.apiClient.mkdirs(this.sessionId, paths, options)
+    );
   }
 
   async statFiles(paths: string[], options?: RpcOptions): Promise<FileMetadata[]> {
-    return this.execute(() => this.apiClient.statFiles(this.sessionId, paths, options));
+    return this.execute('StatFiles', options, () =>
+      this.apiClient.statFiles(this.sessionId, paths, options)
+    );
   }
 
-  private async execute<T>(fn: () => Promise<T>): Promise<T> {
+  private async execute<T>(
+    method: string,
+    { correlationId }: RpcOptions = {},
+    fn: () => Promise<T>
+  ): Promise<T> {
     const gen = this._generation;
+    const startedAt = process.hrtime.bigint();
+    let grpcStatusCode = GRPC_OK;
     try {
       const result = await fn();
       if (this._generation === gen) {
@@ -145,7 +165,9 @@ export class SandboxSessionImpl implements SandboxSession {
       }
       return result;
     } catch (err) {
-      if ((err as any)?.code === 14 /* UNAVAILABLE */ && this._generation === gen) {
+      const code = (err as any)?.code;
+      grpcStatusCode = typeof code === 'number' ? code : GRPC_UNKNOWN;
+      if (code === 14 /* UNAVAILABLE */ && this._generation === gen) {
         this._generation++;
         this._isReset = true;
         this.logger.warn(
@@ -153,6 +175,22 @@ export class SandboxSessionImpl implements SandboxSession {
         );
       }
       throw err;
+    } finally {
+      // The sandbox.* fields and rpc.* names mirror the fields sandbox-api logs for the same
+      // call, so the two log streams can be joined on sandbox.correlation_id.
+      this.logger.debug(`Sandbox RPC ${method} finished with gRPC status ${grpcStatusCode}`, {
+        sandbox: {
+          conversation_id: this.sessionId,
+          ...(correlationId ? { correlation_id: correlationId } : {}),
+        },
+        rpc: {
+          system: 'grpc',
+          service: RPC_SERVICE,
+          method,
+          grpc: { status_code: grpcStatusCode },
+        },
+        event: { duration: Number(process.hrtime.bigint() - startedAt) },
+      });
     }
   }
 }

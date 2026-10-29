@@ -102,6 +102,42 @@ describe('SandboxSessionImpl', () => {
     expect(statFiles).toHaveBeenCalledWith(conversationId, ['/a'], options);
   });
 
+  describe('per-RPC debug log', () => {
+    it('logs the sandbox.* correlation fields and rpc metadata for a successful call', async () => {
+      runCommand.mockResolvedValue(okResult);
+
+      await session.runCommand({ command: 'true' }, { correlationId: 'correlation-1' });
+
+      expect(logger.debug).toHaveBeenCalledWith(
+        'Sandbox RPC RunCommand finished with gRPC status 0',
+        {
+          sandbox: { conversation_id: 'space:conv-1', correlation_id: 'correlation-1' },
+          rpc: {
+            system: 'grpc',
+            service: 'sandbox.SandboxService',
+            method: 'RunCommand',
+            grpc: { status_code: 0 },
+          },
+          event: { duration: expect.any(Number) },
+        }
+      );
+    });
+
+    it('logs the gRPC status code of a failed call and omits a missing correlation id', async () => {
+      runCommand.mockRejectedValue(unavailable());
+
+      await expect(run()).rejects.toThrow('UNAVAILABLE');
+
+      expect(logger.debug).toHaveBeenCalledWith(
+        'Sandbox RPC RunCommand finished with gRPC status 14',
+        expect.objectContaining({
+          sandbox: { conversation_id: 'space:conv-1' },
+          rpc: expect.objectContaining({ grpc: { status_code: 14 } }),
+        })
+      );
+    });
+  });
+
   it('starts with isReset=true', () => {
     expect(session.isReset).toBe(true);
   });
