@@ -380,6 +380,14 @@ export interface StepHandlerContext<TInput = z.ZodType, TConfig = z.ZodObject> {
   stepId: string;
 
   /**
+   * Unique ID of this step run. Unlike `stepId`, it differs per loop iteration and per workflow
+   * execution, and it matches the `step_execution_id` on the step's workflow logs, so it can be
+   * used to correlate external calls made by the step with those logs.
+   * Always set by the workflow engine; absent when a handler is invoked outside of it.
+   */
+  stepExecutionId?: string;
+
+  /**
    * Current step's type
    */
   stepType: string;

@@ -30,6 +30,7 @@ describe('createBaseHandlerContext', () => {
     expect(context.rawInput).toEqual(rawInput);
     expect(context.config).toEqual(config);
     expect(context.stepId).toBe('custom-step');
+    expect(context.stepExecutionId).toBe('step-exec-1');
     expect(context.stepType).toBe('my-custom-type');
     expect(context.abortSignal).toBe(mocks.stepExecutionRuntime.abortController.signal);
 

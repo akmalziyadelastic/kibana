@@ -70,6 +70,7 @@ export function createBaseHandlerContext(
     },
     abortSignal: stepExecutionRuntime.abortController.signal,
     stepId: node.stepId,
+    stepExecutionId: stepExecutionRuntime.stepExecutionId,
     stepType: node.stepType,
   };
 }
