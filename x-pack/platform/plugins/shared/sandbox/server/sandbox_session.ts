@@ -62,7 +62,18 @@ export interface SandboxSession {
    *
    * Every method accepts optional {@link RpcOptions}. `correlationId` is sent to sandbox-api as
    * `x-correlation-id` so its logs can be joined with the Kibana tool call or workflow step that
-   * issued the RPC.
+   * issued the RPC. A value that is not 1-128 printable ASCII characters is not sent.
+   *
+   * Log correlation contract: each RPC also writes one debug log line here, and sandbox-api is
+   * expected to log the same fields for the same call:
+   *
+   * | Field                  | Kibana value                     | sandbox-api source        |
+   * | ---------------------- | -------------------------------- | ------------------------- |
+   * | `sandbox.correlation_id` | `RpcOptions.correlationId`     | `x-correlation-id` header |
+   * | `sandbox.conversation_id` | `<space>__<conversation>`     | `x-conversation-id` header |
+   * | `rpc.method`           | `RunCommand`, `ReadFiles`, ...   | gRPC method               |
+   * | `rpc.grpc.status_code` | gRPC status (`0` when OK)        | gRPC status               |
+   * | `event.duration`       | nanoseconds, measured client-side | nanoseconds, server-side |
    */
   runCommand(params: RunCommandParams, options?: RpcOptions): Promise<RunCommandResult>;
 
@@ -115,8 +126,8 @@ export class SandboxSessionImpl implements SandboxSession {
   }
 
   async runCommand(params: RunCommandParams, options?: RpcOptions): Promise<RunCommandResult> {
-    return this.execute('RunCommand', options, () =>
-      this.apiClient.runCommand(this.sessionId, params, options)
+    return this.execute('RunCommand', options, (rpcOptions) =>
+      this.apiClient.runCommand(this.sessionId, params, rpcOptions)
     );
   }
 
@@ -124,8 +135,8 @@ export class SandboxSessionImpl implements SandboxSession {
     requests: Array<{ path: string; maxReadBytes?: number }>,
     options?: RpcOptions
   ): Promise<ReadFileResult[]> {
-    return this.execute('ReadFiles', options, () =>
-      this.apiClient.readFiles(this.sessionId, requests, options)
+    return this.execute('ReadFiles', options, (rpcOptions) =>
+      this.apiClient.readFiles(this.sessionId, requests, rpcOptions)
     );
   }
 
@@ -133,33 +144,33 @@ export class SandboxSessionImpl implements SandboxSession {
     files: Array<{ path: string; content: Buffer }>,
     options?: RpcOptions
   ): Promise<WriteFileResult[]> {
-    return this.execute('WriteFiles', options, () =>
-      this.apiClient.writeFiles(this.sessionId, files, options)
+    return this.execute('WriteFiles', options, (rpcOptions) =>
+      this.apiClient.writeFiles(this.sessionId, files, rpcOptions)
     );
   }
 
   async mkdirs(paths: string[], options?: RpcOptions): Promise<boolean[]> {
-    return this.execute('Mkdirs', options, () =>
-      this.apiClient.mkdirs(this.sessionId, paths, options)
+    return this.execute('Mkdirs', options, (rpcOptions) =>
+      this.apiClient.mkdirs(this.sessionId, paths, rpcOptions)
     );
   }
 
   async statFiles(paths: string[], options?: RpcOptions): Promise<FileMetadata[]> {
-    return this.execute('StatFiles', options, () =>
-      this.apiClient.statFiles(this.sessionId, paths, options)
+    return this.execute('StatFiles', options, (rpcOptions) =>
+      this.apiClient.statFiles(this.sessionId, paths, rpcOptions)
     );
   }
 
   private async execute<T>(
     method: string,
-    { correlationId }: RpcOptions = {},
-    fn: () => Promise<T>
+    options: RpcOptions = {},
+    call: (options: RpcOptions) => Promise<T>
   ): Promise<T> {
     const gen = this._generation;
     const startedAt = process.hrtime.bigint();
     let grpcStatusCode = GRPC_OK;
     try {
-      const result = await fn();
+      const result = await call(options);
       if (this._generation === gen) {
         this._isReset = false;
       }
@@ -176,12 +187,11 @@ export class SandboxSessionImpl implements SandboxSession {
       }
       throw err;
     } finally {
-      // The sandbox.* fields and rpc.* names mirror the fields sandbox-api logs for the same
-      // call, so the two log streams can be joined on sandbox.correlation_id.
+      // Field contract with sandbox-api: see SandboxSession.
       this.logger.debug(`Sandbox RPC ${method} finished with gRPC status ${grpcStatusCode}`, {
         sandbox: {
           conversation_id: this.sessionId,
-          ...(correlationId ? { correlation_id: correlationId } : {}),
+          ...(options.correlationId ? { correlation_id: options.correlationId } : {}),
         },
         rpc: {
           system: 'grpc',

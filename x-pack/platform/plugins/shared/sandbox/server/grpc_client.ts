@@ -117,6 +117,10 @@ export interface RpcOptions {
   correlationId?: string;
 }
 
+// gRPC rejects metadata values outside printable ASCII by throwing, which would fail the RPC
+// itself. The correlation id is only an observability aid, so an unsendable one is dropped.
+const SENDABLE_CORRELATION_ID = /^[\x20-\x7e]{1,128}$/;
+
 export interface RunCommandParams {
   command: string;
   directory?: string;
@@ -490,7 +494,9 @@ export class SandboxApiClient {
     const md = new grpc.Metadata();
     md.set('authorization', `ApiKey ${this.apiKey}`);
     md.set('x-conversation-id', conversationId);
-    if (correlationId) md.set('x-correlation-id', correlationId);
+    if (correlationId && SENDABLE_CORRELATION_ID.test(correlationId)) {
+      md.set('x-correlation-id', correlationId);
+    }
     return md;
   }
 

@@ -11,14 +11,33 @@ import { SandboxApiClient } from './grpc_client';
 import { SandboxSessionImpl } from './sandbox_session';
 
 const mockClose = jest.fn();
+const mockMetadataSet = jest.fn();
+
+type MockRpc = (
+  request: unknown,
+  metadata: unknown,
+  options: unknown,
+  callback: (err: Error | null, response: unknown) => void
+) => void;
 
 interface MockServiceClient {
   close: () => void;
+  runCommand: MockRpc;
+  statFiles: MockRpc;
+  readFiles: MockRpc;
+  writeFiles: MockRpc;
+  mkdirs: MockRpc;
 }
 
 jest.mock('@grpc/grpc-js', () => {
   function MockSandboxServiceClient(this: MockServiceClient): void {
     this.close = mockClose;
+    const succeed: MockRpc = (_request, _metadata, _options, callback) => callback(null, []);
+    this.runCommand = succeed;
+    this.statFiles = succeed;
+    this.readFiles = succeed;
+    this.writeFiles = succeed;
+    this.mkdirs = succeed;
   }
 
   return {
@@ -28,7 +47,9 @@ jest.mock('@grpc/grpc-js', () => {
       createSsl: () => ({}),
     },
     Metadata: class MockMetadata {
-      set(_key: string, _value: string) {}
+      set(key: string, value: string) {
+        mockMetadataSet(key, value);
+      }
     },
   };
 });
@@ -59,6 +80,41 @@ const defer = <T>(): Deferred<T> => {
 };
 
 const okResult = { stdout: '', stderr: '', exit_code: 0, timed_out: false };
+
+describe('SandboxApiClient metadata', () => {
+  const metadataSent = () => mockMetadataSet.mock.calls.map(([key]) => key);
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it('sends the conversation and correlation ids as headers', async () => {
+    const client = new SandboxApiClient(sandboxConfig);
+
+    await client.statFiles('space__conv-1', ['/a'], { correlationId: 'tool-call-1' });
+
+    expect(mockMetadataSet).toHaveBeenCalledWith('x-conversation-id', 'space__conv-1');
+    expect(mockMetadataSet).toHaveBeenCalledWith('x-correlation-id', 'tool-call-1');
+  });
+
+  it('omits the correlation header when no correlation id is given', async () => {
+    const client = new SandboxApiClient(sandboxConfig);
+
+    await client.statFiles('space__conv-1', ['/a']);
+
+    expect(metadataSent()).toEqual(['authorization', 'x-conversation-id']);
+  });
+
+  it.each([
+    ['non-ASCII characters', 'caf\u00e9'],
+    ['a newline', 'a\nb'],
+    ['more than 128 characters', 'x'.repeat(129)],
+  ])('drops a correlation id with %s instead of failing the RPC', async (_label, correlationId) => {
+    const client = new SandboxApiClient(sandboxConfig);
+
+    await expect(client.statFiles('space__conv-1', ['/a'], { correlationId })).resolves.toEqual([]);
+
+    expect(metadataSent()).not.toContain('x-correlation-id');
+  });
+});
 
 describe('SandboxSessionImpl', () => {
   let logger: jest.Mocked<Logger>;
