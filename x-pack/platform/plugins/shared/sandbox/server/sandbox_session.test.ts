@@ -42,6 +42,7 @@ jest.mock('@grpc/grpc-js', () => {
 
   return {
     makeClientConstructor: () => MockSandboxServiceClient,
+    status: jest.requireActual('@grpc/grpc-js').status,
     credentials: {
       createInsecure: () => ({}),
       createSsl: () => ({}),
@@ -165,14 +166,13 @@ describe('SandboxSessionImpl', () => {
       await session.runCommand({ command: 'true' }, { correlationId: 'correlation-1' });
 
       expect(logger.debug).toHaveBeenCalledWith(
-        'Sandbox RPC RunCommand finished with gRPC status 0',
+        'Sandbox RPC RunCommand finished with gRPC status OK',
         {
           sandbox: { conversation_id: 'space:conv-1', correlation_id: 'correlation-1' },
           rpc: {
-            system: 'grpc',
-            service: 'sandbox.SandboxService',
-            method: 'RunCommand',
-            grpc: { status_code: 0 },
+            system: { name: 'grpc' },
+            method: 'sandbox.SandboxService/RunCommand',
+            response: { status_code: 'OK' },
           },
           event: { duration: expect.any(Number) },
         }
@@ -185,10 +185,10 @@ describe('SandboxSessionImpl', () => {
       await expect(run()).rejects.toThrow('UNAVAILABLE');
 
       expect(logger.debug).toHaveBeenCalledWith(
-        'Sandbox RPC RunCommand finished with gRPC status 14',
+        'Sandbox RPC RunCommand finished with gRPC status UNAVAILABLE',
         expect.objectContaining({
           sandbox: { conversation_id: 'space:conv-1' },
-          rpc: expect.objectContaining({ grpc: { status_code: 14 } }),
+          rpc: expect.objectContaining({ response: { status_code: 'UNAVAILABLE' } }),
         })
       );
     });

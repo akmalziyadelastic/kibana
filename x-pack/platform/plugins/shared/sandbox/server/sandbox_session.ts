@@ -5,6 +5,7 @@
  * 2.0.
  */
 
+import { status as grpcStatus } from '@grpc/grpc-js';
 import type { Logger } from '@kbn/core/server';
 import type {
   SandboxApiClient,
@@ -65,15 +66,20 @@ export interface SandboxSession {
    * issued the RPC. A value that is not 1-128 printable ASCII characters is not sent.
    *
    * Log correlation contract: each RPC also writes one debug log line here, and sandbox-api is
-   * expected to log the same fields for the same call:
+   * expected to log the same fields, with the same values, for the same call. The `rpc.*` fields
+   * follow the OpenTelemetry semantic conventions as of `@opentelemetry/semantic-conventions`
+   * 1.43.0 (the version Kibana pins), not the deprecated `rpc.system`, `rpc.service` and
+   * `rpc.grpc.status_code`. `event.duration` is the ECS field. Overall outcome is derived from
+   * `rpc.response.status_code` rather than logged separately as `event.outcome`.
    *
-   * | Field                  | Kibana value                     | sandbox-api source        |
-   * | ---------------------- | -------------------------------- | ------------------------- |
-   * | `sandbox.correlation_id` | `RpcOptions.correlationId`     | `x-correlation-id` header |
-   * | `sandbox.conversation_id` | `<space>__<conversation>`     | `x-conversation-id` header |
-   * | `rpc.method`           | `RunCommand`, `ReadFiles`, ...   | gRPC method               |
-   * | `rpc.grpc.status_code` | gRPC status (`0` when OK)        | gRPC status               |
-   * | `event.duration`       | nanoseconds, measured client-side | nanoseconds, server-side |
+   * | Field                       | Value                                     | sandbox-api source         |
+   * | --------------------------- | ----------------------------------------- | -------------------------- |
+   * | `sandbox.correlation_id`    | `RpcOptions.correlationId` (when sent)    | `x-correlation-id` header  |
+   * | `sandbox.conversation_id`   | `<space>__<conversation>`                 | `x-conversation-id` header |
+   * | `rpc.system.name`           | `grpc`                                    | `grpc`                     |
+   * | `rpc.method`                | `sandbox.SandboxService/RunCommand`, ...  | fully-qualified gRPC method |
+   * | `rpc.response.status_code`  | gRPC status name, e.g. `OK`, `UNAVAILABLE` | gRPC status name           |
+   * | `event.duration`            | nanoseconds, measured client-side         | nanoseconds, server-side   |
    */
   runCommand(params: RunCommandParams, options?: RpcOptions): Promise<RunCommandResult>;
 
@@ -97,8 +103,9 @@ export interface SandboxSession {
 }
 
 const RPC_SERVICE = 'sandbox.SandboxService';
-const GRPC_OK = 0;
-const GRPC_UNKNOWN = 2;
+
+// OpenTelemetry `rpc.response.status_code` for gRPC is the status name, e.g. `OK` or `UNAVAILABLE`.
+const grpcStatusName = (code: number): string => grpcStatus[code] ?? String(code);
 
 // ---------------------------------------------------------------------------
 // SandboxSessionImpl — per-session wrapper over SandboxApiClient.
@@ -168,7 +175,7 @@ export class SandboxSessionImpl implements SandboxSession {
   ): Promise<T> {
     const gen = this._generation;
     const startedAt = process.hrtime.bigint();
-    let grpcStatusCode = GRPC_OK;
+    let grpcStatusCode: number = grpcStatus.OK;
     try {
       const result = await call(options);
       if (this._generation === gen) {
@@ -177,7 +184,7 @@ export class SandboxSessionImpl implements SandboxSession {
       return result;
     } catch (err) {
       const code = (err as any)?.code;
-      grpcStatusCode = typeof code === 'number' ? code : GRPC_UNKNOWN;
+      grpcStatusCode = typeof code === 'number' ? code : grpcStatus.UNKNOWN;
       if (code === 14 /* UNAVAILABLE */ && this._generation === gen) {
         this._generation++;
         this._isReset = true;
@@ -188,16 +195,16 @@ export class SandboxSessionImpl implements SandboxSession {
       throw err;
     } finally {
       // Field contract with sandbox-api: see SandboxSession.
-      this.logger.debug(`Sandbox RPC ${method} finished with gRPC status ${grpcStatusCode}`, {
+      const statusName = grpcStatusName(grpcStatusCode);
+      this.logger.debug(`Sandbox RPC ${method} finished with gRPC status ${statusName}`, {
         sandbox: {
           conversation_id: this.sessionId,
           ...(options.correlationId ? { correlation_id: options.correlationId } : {}),
         },
         rpc: {
-          system: 'grpc',
-          service: RPC_SERVICE,
-          method,
-          grpc: { status_code: grpcStatusCode },
+          system: { name: 'grpc' },
+          method: `${RPC_SERVICE}/${method}`,
+          response: { status_code: statusName },
         },
         event: { duration: Number(process.hrtime.bigint() - startedAt) },
       });
